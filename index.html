@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spiokoks PDF Viewer // CYBER_OS</title>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+    <div id="authScreen" class="auth-screen">
+        <div class="modal-content outline-neon modal-sm" style="height: auto; max-height: unset;">
+            <div class="modal-header">
+                <h3>[ SPIOKOKS PDF // CYBER_OS ]</h3>
+            </div>
+            <div class="modal-body text-cyber">
+                <div class="auth-tabs">
+                    <button id="tabLogin" class="auth-tab active">Login</button>
+                    <button id="tabRegister" class="auth-tab">Register</button>
+                </div>
+                
+                <div class="auth-form-container">
+                    <input type="email" id="authEmail" class="auth-input" placeholder="Email Address">
+                    <input type="password" id="authPassword" class="auth-input" placeholder="Password">
+                    <button class="tool-btn action-ready" id="authSubmitBtn" style="justify-content:center;">AUTHENTICATE</button>
+                    <div id="authMessage" style="margin-top:10px; font-size:12px; color:var(--neon-pink); text-align:center;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="appContainer" style="display:none; flex-direction:column; height:100vh; width:100vw;">
+        <header>
+            <div class="header-left">
+                <div class="system-logo">Spiokoks // PDF Viewer</div>
+            </div>
+            <div class="header-right">
+                <div class="doc-size-editor" id="docSizeEditor" style="display:none; align-items:center; gap:5px; margin-right: 15px; border-right: 1px solid #333; padding-right: 15px;">
+                    <span style="color:var(--neon-cyan); font-size:12px; font-family:'Share Tech Mono', monospace;">DOC SIZE(IN):</span>
+                    <input type="number" id="docWidthInp" step="0.01" style="width:55px; background:#111; color:var(--text-main); border:1px solid var(--neon-cyan); text-align:center; font-family:'Share Tech Mono', monospace; outline:none;">
+                    <span style="color:#888;">x</span>
+                    <input type="number" id="docHeightInp" step="0.01" style="width:55px; background:#111; color:var(--text-main); border:1px solid var(--neon-cyan); text-align:center; font-family:'Share Tech Mono', monospace; outline:none;">
+                    <button id="applySizeBtn" class="tool-btn-small" style="padding: 2px 6px; font-size:12px; width:auto; border-color:var(--neon-yellow); color:var(--neon-yellow);">RESIZE</button>
+                </div>
+
+                <div class="menu-item active">Home</div>
+                <div class="menu-item" id="docsMenuBtn">Documentation</div>
+                <div class="menu-item" id="aboutMenuBtn">About</div>
+                <div class="menu-item" id="toolsMenuToggle">Tools</div> 
+                
+                <div class="menu-item" id="donateMenuBtn" style="color:var(--neon-yellow);">Donate</div>
+                <div class="menu-item" id="loginMenuBtn" style="display:none;">Log In</div>
+                <div class="menu-item" id="logoutMenuBtn" style="display:none; color:var(--neon-pink);">Log Out</div>
+
+                <div class="menu-item system-clock" id="sysClock">v.2.2.00</div>
+            </div>
+        </header>
+
+        <div class="main-container">
+            <div class="viewer" id="viewerContainer">
+                <div class="viewer-message" id="viewerMessage">
+                    <h2>[ SYSTEM READY ]</h2>
+                    <p>Awaiting input. Click <strong class="neon-text">"Open PDF"</strong> or <strong class="neon-text">"Combine Files"</strong> to initialize workspace.</p>
+                </div>
+                <iframe id="pdfPreview" title="PDF Preview"></iframe>
+            </div>
+
+            <div class="sidebar-right" id="sidebarRight">
+                <div class="sidebar-header">SYS_TOOLS</div>
+                
+                <div class="tools-list">
+                    <button class="tool-btn highlight" id="openPdfBtn">
+                        <span class="tool-icon">📂</span> <span class="tool-text">Open PDF</span>
+                    </button>
+                    <input type="file" id="openPdfInput" accept="application/pdf">
+
+                    <button class="tool-btn" id="combineBtn">
+                        <span class="tool-icon">📁</span> <span class="tool-text">Combine Files</span>
+                    </button>
+                    <input type="file" id="fileInput" accept="image/png, image/jpeg, image/svg+xml, application/pdf" multiple>
+                    
+                    <button class="tool-btn" id="organizeBtn">
+                        <span class="tool-icon">📑</span> <span class="tool-text">Organize Pages</span>
+                    </button>
+                    
+                    <button class="tool-btn" id="splitBtn">
+                        <span class="tool-icon">✂️</span> <span class="tool-text">Split PDF</span>
+                    </button>
+
+                    <button class="tool-btn" id="editPdfBtn">
+                        <span class="tool-icon">✏️</span> <span class="tool-text">Edit PDF (Add Text)</span>
+                    </button>
+                    
+                    <button class="tool-btn" id="attachBtn">
+                        <span class="tool-icon">📎</span> <span class="tool-text">Attach File to Page</span> 
+                    </button>
+                    <input type="file" id="attachInput" accept="image/png, image/jpeg, image/svg+xml">
+                    
+                    <button class="tool-btn action-ready" id="exportBtn">
+                        <span class="tool-icon">📤</span> <span class="tool-text">Export PDF</span>
+                    </button>
+
+                    <div id="status"></div>
+                </div>
+
+                <div id="adContainer" class="ad-container">
+                    <div class="ad-placeholder">
+                        [ ADVERTISEMENT SPACE ]<br>
+                        <span style="font-size: 10px; color:#888;">Upgrade to Donator to remove ads.</span>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+    
+    <div id="organizeModal" class="modal">
+        <div class="modal-content outline-neon">
+            <div class="modal-header">
+                <h3>[ ORGANIZE_PAGES ]</h3>
+                <div class="workspace-toolbar">
+                    <button class="tool-btn-small" id="orgAddBtn" style="color: var(--neon-cyan); border-color: var(--neon-cyan);">➕ Insert File</button>
+                    <input type="file" id="orgAddInput" accept="image/png, image/jpeg, image/svg+xml, application/pdf" style="display: none;">
+                    
+                    <button class="tool-btn-small" id="orgAddBlankBtn" style="color: var(--neon-pink); border-color: var(--neon-pink);">📄 Insert Blank Page</button>
+
+                    <span class="toolbar-divider"></span>
+                    <button class="tool-btn-small" id="orgUndoBtn" title="Undo Reorganization">↩️</button>
+                    <button class="tool-btn-small" id="orgRedoBtn" title="Redo Reorganization">↪️</button>
+                    <span class="toolbar-divider"></span>
+                    <button class="tool-btn action-ready" id="applyOrgBtn" style="display:inline-block; width:auto; padding: 8px 16px;">💾 Apply Reorganization</button>
+                    <button id="closeModalBtn" class="close-btn">&times;</button>
+                </div>
+            </div>
+            <div id="thumbnailGrid" class="thumbnail-grid"></div>
+        </div>
+    </div>
+
+    <div id="editModal" class="modal">
+        <div class="modal-content outline-neon" style="width: 80%; height: 90%;">
+            <div class="modal-header">
+                <h3>[ EDIT_WORKSPACE ] - Scale elements via control nodes</h3>
+                <div class="workspace-toolbar">
+                    <button class="tool-btn-small" id="undoBtn" title="Undo">↩️</button>
+                    <button class="tool-btn-small" id="redoBtn" title="Redo">↪️</button>
+                    <button class="tool-btn-small" id="globalTrashBtn" title="Delete Selected Element">🗑️</button>
+                    <span class="toolbar-divider"></span>
+                    <button class="tool-btn action-ready" id="applyEditsBtn" style="display:inline-block; width:auto; padding: 8px 16px;">💾 Apply Changes</button>
+                    <button id="closeEditModalBtn" class="close-btn">&times;</button>
+                </div>
+            </div>
+            <div id="workspaceContainer" class="workspace-container">
+                <div id="canvasWrapper" class="canvas-wrapper">
+                    <canvas id="editCanvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="exportModal" class="modal">
+        <div class="modal-content outline-neon modal-sm">
+            <div class="loader-container">
+                <div class="cyber-spinner"></div>
+                <div class="loader-text">[ EXPORTING_DATA_STREAM... ]</div>
+                <div class="loader-sub">Awaiting compiler resolution. Please hold.</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="donateModal" class="modal">
+        <div class="modal-content outline-neon modal-md">
+            <div class="modal-header">
+                <h3>[ UPGRADE_ACCESS // DONATE ]</h3>
+                <button id="closeDonateModalBtn" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body text-cyber">
+                <h2 style="color:var(--neon-yellow);">Support Spiokoks Softwares</h2>
+                <p>Donate to unlock an <strong class="neon-text">Ad-Free Workspace</strong> for 1 Month!</p>
+                
+                <div class="cyber-divider"></div>
+                
+                <h4>How to Upgrade:</h4>
+                <ol>
+                    <li>Ensure you are registered and <strong>logged in</strong> to your account here.</li>
+                    <li>Send your donation via our supported channels (e.g., GCash, PayPal).</li>
+                    <li>Message our Facebook page with a screenshot of the transaction and the <strong>Email Address</strong> you used to register.</li>
+                    <li>Our system admin will manually verify and upgrade your account duration in the database.</li>
+                </ol>
+
+                <p>
+                    <a href="https://www.facebook.com" target="_blank" class="cyber-link">
+                        🌐 Message for Verification: <strong style="color:var(--neon-cyan);">Spiokoks Softwares Facebook</strong>
+                    </a>
+                </p>
+                
+                <div id="donateStatusDisplay" style="margin-top:20px; padding:10px; border:1px solid #333; text-align:center;">
+                    [ AWAITING AUTHENTICATION STATUS ]
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="aboutModal" class="modal">
+        <div class="modal-content outline-neon modal-md">
+            <div class="modal-header">
+                <h3>[ SYSTEM_INFO // ABOUT ]</h3>
+                <button id="closeAboutModalBtn" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body text-cyber">
+                <p><span class="neon-text">APPLICATION:</span> Spiokoks PDF Viewer</p>
+                <p><span class="neon-text">DEVELOPER:</span> Juan Salgarino</p>
+                <p><span class="neon-text">ORIGIN:</span> Philippines</p>
+                <p><span class="neon-text">LAUNCHED:</span> June 2026</p>
+                <div class="cyber-divider"></div>
+                <h3>[ SYSTEM_SUPPORT ]</h3>
+                <p>Encountered an anomaly or need structural assistance? Direct all operational inquiries to our official terminal uplink network:</p>
+                <p>
+                    <a href="https://www.facebook.com" target="_blank" class="cyber-link">
+                        🌐 Facebook Page: <strong style="color:var(--neon-yellow);">Spiokoks Softwares</strong>
+                    </a>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <div id="docsModal" class="modal">
+        <div class="modal-content outline-neon modal-lg">
+            <div class="modal-header">
+                <h3>[ SYSTEM_DOCUMENTATION // USER_GUIDE ]</h3>
+                <button id="closeDocsModalBtn" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body text-cyber scrollable-body">
+                <h2>Welcome to Spiokoks Terminal Workspace</h2>
+                <p>Deploy this framework using the following control matrices:</p>
+                
+                <div class="doc-section">
+                    <h4>1. File Ingestion Matrix</h4>
+                    <ul>
+                        <li><strong>Open PDF:</strong> Pulls a single localized PDF document into the core render pipeline.</li>
+                        <li><strong>Combine Files:</strong> Aggregates multiple asset nodes and bundles them into a master document stream.</li>
+                    </ul>
+                </div>
+                <div class="doc-section">
+                    <h4>2. Page & Node Mutation</h4>
+                    <ul>
+                        <li><strong>Organize Pages:</strong> Opens the visual deck array. Drag individual thumbnails to restructure index sequence. Use overlay buttons to rotate orientation or clear page objects entirely. You can also append blank layouts or inject fresh documents directly into the active matrix deck. Click <em>Apply Reorganization</em> to bake configurations.</li>
+                        <li><strong>Split PDF:</strong> Chops the loaded target file into block increments based on your specified sequence volume chunk constraints.</li>
+                    </ul>
+                </div>
+                <div class="doc-section">
+                    <h4>3. Workspace Annotation Layover</h4>
+                    <ul>
+                        <li><strong>Edit PDF (Add Text):</strong> Assigns standard typographic objects onto selected canvas zones. Highlight item grids to reposition layout, alter scale bounds via corner anchors, or alter structural string metrics inline.</li>
+                        <li><strong>Attach File to Page:</strong> Embeds image files directly over target canvas coordinates using localized scale structures.</li>
+                        <li>Ensure you commit your modifications by executing the <em>Apply Changes</em> routine to overlay alterations securely.</li>
+                    </ul>
+                </div>
+                <div class="doc-section">
+                    <h4>4. Compiling & Document Extraction</h4>
+                    <ul>
+                        <li><strong>Document Resizing:</strong> Provide numeric metrics inside the top deck dashboard panels to override baseline sheet parameters securely.</li>
+                        <li><strong>Export PDF:</strong> Compiles layered node logic safely into a finalized, download-ready portable data format document.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="./script.js"></script>
+</body>
+</html>

@@ -1,10 +1,10 @@
-// SUPABASE INITIALIZATION
+// SUPABASE INITIALIZATION (Replace with your actual keys!)
 const SUPABASE_URL = 'https://gxggetfxkzhegqehcjzv.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd4Z2dldGZ4a3poZWdxZWhjanp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIyMTAxNzQsImV4cCI6MjA5Nzc4NjE3NH0.iNqyqCC3ZSrKhOW2JrfmL7iN6MK7J5U_2XXZbxJPGEw';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Access Libraries
-const { PDFDocument, rgb, degrees } = PDFLib;
+// Access Libraries (CMYK included)
+const { PDFDocument, rgb, cmyk, degrees } = PDFLib;
 const pdfjsLib = window['pdfjs-dist/build/pdf'];
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
@@ -66,24 +66,27 @@ const closeAboutModalBtn = document.getElementById('closeAboutModalBtn');
 const loginMenuBtn = document.getElementById('loginMenuBtn');
 const logoutMenuBtn = document.getElementById('logoutMenuBtn');
 const donateMenuBtn = document.getElementById('donateMenuBtn');
-const authScreen = document.getElementById('authScreen');
+const authModal = document.getElementById('authModal');
+const closeAuthModalBtn = document.getElementById('closeAuthModalBtn');
 const donateModal = document.getElementById('donateModal');
 const closeDonateModalBtn = document.getElementById('closeDonateModalBtn');
 const adContainer = document.getElementById('adContainer');
-const appContainer = document.getElementById('appContainer');
 
 // Setup Navigation Event Listeners
 docsMenuBtn.addEventListener('click', () => docsModal.style.display = 'flex');
 aboutMenuBtn.addEventListener('click', () => aboutModal.style.display = 'flex');
+loginMenuBtn.addEventListener('click', () => authModal.style.display = 'flex');
 donateMenuBtn.addEventListener('click', () => donateModal.style.display = 'flex');
 
 closeDocsModalBtn.addEventListener('click', () => docsModal.style.display = 'none');
 closeAboutModalBtn.addEventListener('click', () => aboutModal.style.display = 'none');
+closeAuthModalBtn.addEventListener('click', () => authModal.style.display = 'none');
 closeDonateModalBtn.addEventListener('click', () => donateModal.style.display = 'none');
 
 window.addEventListener('click', (e) => {
     if (e.target === docsModal) docsModal.style.display = 'none';
     if (e.target === aboutModal) aboutModal.style.display = 'none';
+    if (e.target === authModal) authModal.style.display = 'none';
     if (e.target === donateModal) donateModal.style.display = 'none';
 });
 
@@ -126,26 +129,15 @@ authSubmitBtn.addEventListener('click', async () => {
     
     if (isLoginMode) {
         const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-        if (error) {
-            authMessage.innerText = `[ ERROR: ${error.message} ]`;
-        } else {
+        if (error) authMessage.innerText = `[ ERROR: ${error.message} ]`;
+        else {
+            authModal.style.display = 'none';
             checkSession();
         }
     } else {
         const { data, error } = await supabaseClient.auth.signUp({ email, password });
-        if (error) {
-            authMessage.innerText = `[ ERROR: ${error.message} ]`;
-        } else {
-            alert("Check your email to verify!");
-            
-            // Revert interface view cleanly back to Login context
-            isLoginMode = true;
-            tabLogin.classList.add('active');
-            tabRegister.classList.remove('active');
-            authMessage.innerText = "[ SUCCESS: Registration complete. Please verify & log in. ]";
-            authEmail.value = '';
-            authPassword.value = '';
-        }
+        if (error) authMessage.innerText = `[ ERROR: ${error.message} ]`;
+        else authMessage.innerText = "[ SUCCESS: Registration complete. Please log in. ]";
     }
     
     authSubmitBtn.innerText = isLoginMode ? 'AUTHENTICATE' : 'REGISTER';
@@ -160,19 +152,15 @@ async function checkSession() {
     const { data: { session } } = await supabaseClient.auth.getSession();
     
     if (session) {
-        // User is logged in: Swap screens safely
-        authScreen.style.display = 'none';
-        appContainer.style.display = 'flex';
+        // User is logged in
         loginMenuBtn.style.display = 'none';
         logoutMenuBtn.style.display = 'block';
         checkDonationStatus(session.user);
     } else {
-        // User is logged out: Restrict screen safely
-        appContainer.style.display = 'none';
-        authScreen.style.display = 'flex';
+        // User is logged out
         loginMenuBtn.style.display = 'block';
         logoutMenuBtn.style.display = 'none';
-        adContainer.style.display = 'flex'; 
+        adContainer.style.display = 'flex'; // Show ads for free users
         donateStatusDisplay.innerHTML = `[ <strong style="color:var(--neon-pink);">ACCESS DENIED</strong> ]<br><span style="font-size:12px; color:#888;">Please log in to check your Donator status.</span>`;
     }
 }
@@ -184,33 +172,29 @@ async function checkDonationStatus(user) {
         .eq('id', user.id)
         .single();
 
-    if (error) {
-        console.error("[Supabase Profile Read Error]: Check RLS Policies.", error);
-    }
-
     if (data && data.donation_active_until) {
         const expirationDate = new Date(data.donation_active_until);
         const now = new Date();
 
-        // Modified checking: handles precision date testing setups seamlessly
-        if (expirationDate > now || expirationDate.toDateString() === now.toDateString()) {
+        if (expirationDate > now) {
+            // User is a Donator
             adContainer.style.display = 'none'; // REMOVE ADS
             donateStatusDisplay.innerHTML = `[ <strong style="color:var(--neon-cyan);">DONATOR ACTIVE</strong> ]<br><span style="font-size:12px; color:#888;">No ads. Expires on: ${expirationDate.toLocaleDateString()}</span>`;
             return;
         }
     }
     
-    // Default tier callback execution
-    adContainer.style.display = 'flex'; 
+    // User is logged in but NOT an active donator
+    adContainer.style.display = 'flex'; // SHOW ADS
     donateStatusDisplay.innerHTML = `[ <strong style="color:var(--neon-yellow);">STANDARD TIER</strong> ]<br><span style="font-size:12px; color:#888;">Logged in as: ${user.email}</span>`;
 }
 
-// Run authorization tracking checks upon system boot initialization
+// Check session on page load
 checkSession();
 
 
 // ==========================================
-// CORE PDF LOGIC
+// CORE PDF LOGIC (Updated for CMYK Support)
 // ==========================================
 
 // State Management
@@ -224,6 +208,15 @@ let redoStack = [];
 let organizeState = []; 
 let orgUndoStack = [];
 let orgRedoStack = [];
+
+// [ NEW ]: CMYK State Tracking
+let isDocCMYK = false; 
+
+// [ NEW ]: Quick heuristic to detect if the PDF contains CMYK color spaces
+function detectCMYK(bytes) {
+    const str = new TextDecoder('ascii', { fatal: false }).decode(bytes);
+    return str.includes('/DeviceCMYK') || str.includes('CMYK');
+}
 
 async function updatePreview(bytes) {
     currentPdfBytes = bytes;
@@ -351,9 +344,14 @@ openPdfInput.addEventListener('change', async (e) => {
     if (!file) return;
     try {
         pdfLayers = {}; 
-        basePdfBytes = await (await PDFDocument.load(await file.arrayBuffer())).save(); 
+        const buffer = await file.arrayBuffer();
+        
+        isDocCMYK = detectCMYK(buffer); // Scan for CMYK profile
+        
+        basePdfBytes = await (await PDFDocument.load(buffer)).save(); 
         updatePreview(basePdfBytes);
-        statusDisplay.innerText = '[ SYSTEM: PDF LOADED ]';
+        
+        statusDisplay.innerText = isDocCMYK ? '[ SYSTEM: PDF LOADED (CMYK DETECTED) ]' : '[ SYSTEM: PDF LOADED ]';
     } catch (error) { statusDisplay.innerText = '[ ERROR: LOAD FAILED ]'; }
 });
 
@@ -364,17 +362,29 @@ fileInput.addEventListener('change', async (e) => {
     statusDisplay.innerText = `[ COMBINING ${files.length} FILES... ]`;
     pdfLayers = {}; 
     let hasRasterImages = false; 
+    isDocCMYK = false;
 
     try {
-        const targetPdf = await PDFDocument.create();
+        let targetPdf;
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const arrayBuffer = await file.arrayBuffer();
+            
+            if(detectCMYK(arrayBuffer)) isDocCMYK = true; // Update global state
+
             if (file.type === 'application/pdf') {
                 const srcDoc = await PDFDocument.load(arrayBuffer);
-                (await targetPdf.copyPages(srcDoc, srcDoc.getPageIndices())).forEach(p => targetPdf.addPage(p));
+                
+                // Use the FIRST PDF as the structural base to preserve native CMYK ICC profiles
+                if (i === 0) {
+                    targetPdf = srcDoc;
+                } else {
+                    (await targetPdf.copyPages(srcDoc, srcDoc.getPageIndices())).forEach(p => targetPdf.addPage(p));
+                }
             } else {
                 hasRasterImages = true; 
+                if (!targetPdf) targetPdf = await PDFDocument.create(); // Fallback
+                
                 let imgData;
                 if (file.type === 'image/svg+xml') imgData = await targetPdf.embedPng(await svgToPngDataUrl(file));
                 else if (file.type === 'image/png') imgData = await targetPdf.embedPng(arrayBuffer);
@@ -390,11 +400,10 @@ fileInput.addEventListener('change', async (e) => {
         basePdfBytes = await targetPdf.save(); 
         updatePreview(basePdfBytes);
         
-        if (hasRasterImages) {
-            statusDisplay.innerText = '[ MERGED: FLAT IMAGES (NO SELECTABLE TEXT) ]';
-        } else {
-            statusDisplay.innerText = '[ FILES MERGED ]';
-        }
+        let statusText = hasRasterImages ? '[ MERGED: FLAT IMAGES ]' : '[ FILES MERGED ]';
+        if(isDocCMYK) statusText += ' [ CMYK INTEGRITY PRESERVED ]';
+        statusDisplay.innerText = statusText;
+        
     } catch (err) { statusDisplay.innerText = '[ ERROR: MERGE FAILED ]'; }
 });
 
@@ -793,11 +802,15 @@ applyEditsBtn.addEventListener('click', async () => {
 
                 if (data.type === 'text') {
                     const pdfFontSize = data.fontSize / 1.5; 
+                    
+                    // [ NEW ] Dynamically inject the correct color profile
+                    const textColor = isDocCMYK ? cmyk(0, 0, 0, 1) : rgb(0, 0, 0);
+
                     page.drawText(data.text, { 
                         x: pdfX + (4 / pageCanvasW) * pdfSize.width, 
                         y: pdfTopY - pdfFontSize - (4 / pageCanvasH) * pdfSize.height, 
                         size: pdfFontSize, 
-                        color: rgb(0,0,0),
+                        color: textColor,
                         maxWidth: pdfW,
                         lineHeight: pdfFontSize * 1.2
                     });

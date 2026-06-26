@@ -263,7 +263,9 @@ input[type=number] {
 .doc-section ul { padding-left: 20px; }
 .doc-section li { margin-bottom: 8px; }
 
-/* AD CONTAINER */
+/* --- EXISTING CSS STAYS EXACTLY THE SAME ABOVE THIS LINE --- */
+
+/* ADSENSE CONTAINER */
 .ad-container {
     padding: 10px;
     background: #0f0f12;
@@ -341,15 +343,4 @@ input[type=number] {
 .auth-input:focus {
     border-color: var(--neon-cyan);
     box-shadow: 0 0 5px rgba(0,243,255,0.2);
-}
-
-/* Splash Landing Screen Configuration Layout */
-.auth-screen {
-    position: fixed;
-    top: 0; left: 0; width: 100vw; height: 100vh;
-    background-color: var(--bg-dark);
-    background-image: linear-gradient(var(--grid-color) 1px, transparent 1px), linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
-    background-size: 30px 30px;
-    display: flex; justify-content: center; align-items: center;
-    z-index: 2000;
 }

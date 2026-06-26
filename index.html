@@ -13,109 +13,86 @@
 </head>
 <body>
 
-    <div id="authScreen" class="auth-screen">
-        <div class="modal-content outline-neon modal-sm" style="height: auto; max-height: unset;">
-            <div class="modal-header">
-                <h3>[ SPIOKOKS PDF // CYBER_OS ]</h3>
-            </div>
-            <div class="modal-body text-cyber">
-                <div class="auth-tabs">
-                    <button id="tabLogin" class="auth-tab active">Login</button>
-                    <button id="tabRegister" class="auth-tab">Register</button>
-                </div>
-                
-                <div class="auth-form-container">
-                    <input type="email" id="authEmail" class="auth-input" placeholder="Email Address">
-                    <input type="password" id="authPassword" class="auth-input" placeholder="Password">
-                    <button class="tool-btn action-ready" id="authSubmitBtn" style="justify-content:center;">AUTHENTICATE</button>
-                    <div id="authMessage" style="margin-top:10px; font-size:12px; color:var(--neon-pink); text-align:center;"></div>
-                </div>
-            </div>
+    <header>
+        <div class="header-left">
+            <div class="system-logo">Spiokoks // PDF Viewer</div>
         </div>
-    </div>
-
-    <div id="appContainer" style="display:none; flex-direction:column; height:100vh; width:100vw;">
-        <header>
-            <div class="header-left">
-                <div class="system-logo">Spiokoks // PDF Viewer</div>
+        <div class="header-right">
+            <div class="doc-size-editor" id="docSizeEditor" style="display:none; align-items:center; gap:5px; margin-right: 15px; border-right: 1px solid #333; padding-right: 15px;">
+                <span style="color:var(--neon-cyan); font-size:12px; font-family:'Share Tech Mono', monospace;">DOC SIZE(IN):</span>
+                <input type="number" id="docWidthInp" step="0.01" style="width:55px; background:#111; color:var(--text-main); border:1px solid var(--neon-cyan); text-align:center; font-family:'Share Tech Mono', monospace; outline:none;">
+                <span style="color:#888;">x</span>
+                <input type="number" id="docHeightInp" step="0.01" style="width:55px; background:#111; color:var(--text-main); border:1px solid var(--neon-cyan); text-align:center; font-family:'Share Tech Mono', monospace; outline:none;">
+                <button id="applySizeBtn" class="tool-btn-small" style="padding: 2px 6px; font-size:12px; width:auto; border-color:var(--neon-yellow); color:var(--neon-yellow);">RESIZE</button>
             </div>
-            <div class="header-right">
-                <div class="doc-size-editor" id="docSizeEditor" style="display:none; align-items:center; gap:5px; margin-right: 15px; border-right: 1px solid #333; padding-right: 15px;">
-                    <span style="color:var(--neon-cyan); font-size:12px; font-family:'Share Tech Mono', monospace;">DOC SIZE(IN):</span>
-                    <input type="number" id="docWidthInp" step="0.01" style="width:55px; background:#111; color:var(--text-main); border:1px solid var(--neon-cyan); text-align:center; font-family:'Share Tech Mono', monospace; outline:none;">
-                    <span style="color:#888;">x</span>
-                    <input type="number" id="docHeightInp" step="0.01" style="width:55px; background:#111; color:var(--text-main); border:1px solid var(--neon-cyan); text-align:center; font-family:'Share Tech Mono', monospace; outline:none;">
-                    <button id="applySizeBtn" class="tool-btn-small" style="padding: 2px 6px; font-size:12px; width:auto; border-color:var(--neon-yellow); color:var(--neon-yellow);">RESIZE</button>
-                </div>
 
-                <div class="menu-item active">Home</div>
-                <div class="menu-item" id="docsMenuBtn">Documentation</div>
-                <div class="menu-item" id="aboutMenuBtn">About</div>
-                <div class="menu-item" id="toolsMenuToggle">Tools</div> 
+            <div class="menu-item active">Home</div>
+            <div class="menu-item" id="docsMenuBtn">Documentation</div>
+            <div class="menu-item" id="aboutMenuBtn">About</div>
+            <div class="menu-item" id="toolsMenuToggle">Tools</div> 
+            
+            <div class="menu-item" id="donateMenuBtn" style="color:var(--neon-yellow);">Donate</div>
+            <div class="menu-item" id="loginMenuBtn">Log In</div>
+            <div class="menu-item" id="logoutMenuBtn" style="display:none; color:var(--neon-pink);">Log Out</div>
+
+            <div class="menu-item system-clock" id="sysClock">v.2.2.00</div>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <div class="viewer" id="viewerContainer">
+            <div class="viewer-message" id="viewerMessage">
+                <h2>[ SYSTEM READY ]</h2>
+                <p>Awaiting input. Click <strong class="neon-text">"Open PDF"</strong> or <strong class="neon-text">"Combine Files"</strong> to initialize workspace.</p>
+            </div>
+            <iframe id="pdfPreview" title="PDF Preview"></iframe>
+        </div>
+
+        <div class="sidebar-right" id="sidebarRight">
+            <div class="sidebar-header">SYS_TOOLS</div>
+            
+            <div class="tools-list">
+                <button class="tool-btn highlight" id="openPdfBtn">
+                    <span class="tool-icon">📂</span> <span class="tool-text">Open PDF</span>
+                </button>
+                <input type="file" id="openPdfInput" accept="application/pdf">
+
+                <button class="tool-btn" id="combineBtn">
+                    <span class="tool-icon">📁</span> <span class="tool-text">Combine Files</span>
+                </button>
+                <input type="file" id="fileInput" accept="image/png, image/jpeg, image/svg+xml, application/pdf" multiple>
                 
-                <div class="menu-item" id="donateMenuBtn" style="color:var(--neon-yellow);">Donate</div>
-                <div class="menu-item" id="loginMenuBtn" style="display:none;">Log In</div>
-                <div class="menu-item" id="logoutMenuBtn" style="display:none; color:var(--neon-pink);">Log Out</div>
-
-                <div class="menu-item system-clock" id="sysClock">v.2.2.00</div>
-            </div>
-        </header>
-
-        <div class="main-container">
-            <div class="viewer" id="viewerContainer">
-                <div class="viewer-message" id="viewerMessage">
-                    <h2>[ SYSTEM READY ]</h2>
-                    <p>Awaiting input. Click <strong class="neon-text">"Open PDF"</strong> or <strong class="neon-text">"Combine Files"</strong> to initialize workspace.</p>
-                </div>
-                <iframe id="pdfPreview" title="PDF Preview"></iframe>
-            </div>
-
-            <div class="sidebar-right" id="sidebarRight">
-                <div class="sidebar-header">SYS_TOOLS</div>
+                <button class="tool-btn" id="organizeBtn">
+                    <span class="tool-icon">📑</span> <span class="tool-text">Organize Pages</span>
+                </button>
                 
-                <div class="tools-list">
-                    <button class="tool-btn highlight" id="openPdfBtn">
-                        <span class="tool-icon">📂</span> <span class="tool-text">Open PDF</span>
-                    </button>
-                    <input type="file" id="openPdfInput" accept="application/pdf">
+                <button class="tool-btn" id="splitBtn">
+                    <span class="tool-icon">✂️</span> <span class="tool-text">Split PDF</span>
+                </button>
 
-                    <button class="tool-btn" id="combineBtn">
-                        <span class="tool-icon">📁</span> <span class="tool-text">Combine Files</span>
-                    </button>
-                    <input type="file" id="fileInput" accept="image/png, image/jpeg, image/svg+xml, application/pdf" multiple>
-                    
-                    <button class="tool-btn" id="organizeBtn">
-                        <span class="tool-icon">📑</span> <span class="tool-text">Organize Pages</span>
-                    </button>
-                    
-                    <button class="tool-btn" id="splitBtn">
-                        <span class="tool-icon">✂️</span> <span class="tool-text">Split PDF</span>
-                    </button>
+                <button class="tool-btn" id="editPdfBtn">
+                    <span class="tool-icon">✏️</span> <span class="tool-text">Edit PDF (Add Text)</span>
+                </button>
+                
+                <button class="tool-btn" id="attachBtn">
+                    <span class="tool-icon">📎</span> <span class="tool-text">Attach File to Page</span> 
+                </button>
+                <input type="file" id="attachInput" accept="image/png, image/jpeg, image/svg+xml">
+                
+                <button class="tool-btn action-ready" id="exportBtn">
+                    <span class="tool-icon">📤</span> <span class="tool-text">Export PDF</span>
+                </button>
 
-                    <button class="tool-btn" id="editPdfBtn">
-                        <span class="tool-icon">✏️</span> <span class="tool-text">Edit PDF (Add Text)</span>
-                    </button>
-                    
-                    <button class="tool-btn" id="attachBtn">
-                        <span class="tool-icon">📎</span> <span class="tool-text">Attach File to Page</span> 
-                    </button>
-                    <input type="file" id="attachInput" accept="image/png, image/jpeg, image/svg+xml">
-                    
-                    <button class="tool-btn action-ready" id="exportBtn">
-                        <span class="tool-icon">📤</span> <span class="tool-text">Export PDF</span>
-                    </button>
-
-                    <div id="status"></div>
-                </div>
-
-                <div id="adContainer" class="ad-container">
-                    <div class="ad-placeholder">
-                        [ ADVERTISEMENT SPACE ]<br>
-                        <span style="font-size: 10px; color:#888;">Upgrade to Donator to remove ads.</span>
-                    </div>
-                </div>
-
+                <div id="status"></div>
             </div>
+
+            <div id="adContainer" class="ad-container">
+                <div class="ad-placeholder">
+                    [ ADVERTISEMENT SPACE ]<br>
+                    <span style="font-size: 10px; color:#888;">Upgrade to Donator to remove ads.</span>
+                </div>
+            </div>
+
         </div>
     </div>
     
@@ -168,6 +145,28 @@
                 <div class="cyber-spinner"></div>
                 <div class="loader-text">[ EXPORTING_DATA_STREAM... ]</div>
                 <div class="loader-sub">Awaiting compiler resolution. Please hold.</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="authModal" class="modal">
+        <div class="modal-content outline-neon modal-sm">
+            <div class="modal-header">
+                <h3>[ SYSTEM_AUTH ]</h3>
+                <button id="closeAuthModalBtn" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body text-cyber">
+                <div class="auth-tabs">
+                    <button id="tabLogin" class="auth-tab active">Login</button>
+                    <button id="tabRegister" class="auth-tab">Register</button>
+                </div>
+                
+                <div class="auth-form-container">
+                    <input type="email" id="authEmail" class="auth-input" placeholder="Email Address">
+                    <input type="password" id="authPassword" class="auth-input" placeholder="Password">
+                    <button class="tool-btn action-ready" id="authSubmitBtn" style="justify-content:center;">AUTHENTICATE</button>
+                    <div id="authMessage" style="margin-top:10px; font-size:12px; color:var(--neon-pink); text-align:center;"></div>
+                </div>
             </div>
         </div>
     </div>

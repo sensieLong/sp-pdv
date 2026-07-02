@@ -25,6 +25,11 @@ const viewerMessage = document.getElementById('viewerMessage');
 const pdfPreview = document.getElementById('pdfPreview');
 
 const applySizeBtn = document.getElementById('applySizeBtn');
+const docWidthInp = document.getElementById('docWidthInp');
+const docHeightInp = document.getElementById('docHeightInp');
+const docResInp = document.getElementById('docResInp');
+const linkWhBtn = document.getElementById('linkWhBtn');
+const linkHResBtn = document.getElementById('linkHResBtn');
 
 // Sidebar Toggle Logic
 const toolsMenuToggle = document.getElementById('toolsMenuToggle');
@@ -192,9 +197,87 @@ async function checkDonationStatus(user) {
 // Check session on page load
 checkSession();
 
+// ==========================================
+// NEW FEATURE: PROPORTIONAL RESIZING & RESOLUTION LINKING
+// ==========================================
+
+let aspectRatio = 1;
+let basePixelsW = 0;
+let basePixelsH = 0;
+let isUpdatingSize = false;
+
+function updateSizeCalculations(source) {
+    if(isUpdatingSize) return;
+    isUpdatingSize = true;
+    
+    let w = parseFloat(docWidthInp.value);
+    let h = parseFloat(docHeightInp.value);
+    let res = parseFloat(docResInp.value);
+
+    // Only process mathematically if all fields contain valid numbers above 0
+    if (w > 0 && h > 0 && res > 0) {
+        if (source === 'w') {
+            if (!linkWhBtn.classList.contains('unlinked')) {
+                h = w / aspectRatio;
+                docHeightInp.value = h.toFixed(2);
+            }
+            if (!linkHResBtn.classList.contains('unlinked')) {
+                res = basePixelsH / h;
+                docResInp.value = res.toFixed(2);
+            }
+        } else if (source === 'h') {
+            if (!linkWhBtn.classList.contains('unlinked')) {
+                w = h * aspectRatio;
+                docWidthInp.value = w.toFixed(2);
+            }
+            if (!linkHResBtn.classList.contains('unlinked')) {
+                res = basePixelsH / h;
+                docResInp.value = res.toFixed(2);
+            }
+        } else if (source === 'res') {
+            if (!linkHResBtn.classList.contains('unlinked')) {
+                h = basePixelsH / res;
+                docHeightInp.value = h.toFixed(2);
+                if (!linkWhBtn.classList.contains('unlinked')) {
+                    w = h * aspectRatio;
+                    docWidthInp.value = w.toFixed(2);
+                }
+            }
+        }
+    }
+    
+    // Update baseline states to reflect the new geometry
+    w = parseFloat(docWidthInp.value);
+    h = parseFloat(docHeightInp.value);
+    res = parseFloat(docResInp.value);
+    
+    if (w > 0 && h > 0 && res > 0) {
+        aspectRatio = w / h;
+        basePixelsW = w * res;
+        basePixelsH = h * res;
+    }
+    
+    isUpdatingSize = false;
+}
+
+// Attach event listeners for real-time sizing edits
+docWidthInp.addEventListener('input', () => updateSizeCalculations('w'));
+docHeightInp.addEventListener('input', () => updateSizeCalculations('h'));
+docResInp.addEventListener('input', () => updateSizeCalculations('res'));
+
+linkWhBtn.addEventListener('click', () => {
+    linkWhBtn.classList.toggle('unlinked');
+    updateSizeCalculations('none'); 
+});
+
+linkHResBtn.addEventListener('click', () => {
+    linkHResBtn.classList.toggle('unlinked');
+    updateSizeCalculations('none');
+});
+
 
 // ==========================================
-// CORE PDF LOGIC (Updated for CMYK Support)
+// CORE PDF LOGIC 
 // ==========================================
 
 // State Management
@@ -208,11 +291,8 @@ let redoStack = [];
 let organizeState = []; 
 let orgUndoStack = [];
 let orgRedoStack = [];
-
-// [ NEW ]: CMYK State Tracking
 let isDocCMYK = false; 
 
-// [ NEW ]: Quick heuristic to detect if the PDF contains CMYK color spaces
 function detectCMYK(bytes) {
     const str = new TextDecoder('ascii', { fatal: false }).decode(bytes);
     return str.includes('/DeviceCMYK') || str.includes('CMYK');
@@ -232,9 +312,16 @@ async function updatePreview(bytes) {
         if(pdfDoc.getPageCount() > 0) {
             const page = pdfDoc.getPage(0);
             const { width, height } = page.getSize();
-            document.getElementById('docWidthInp').value = (width / 72).toFixed(2);
-            document.getElementById('docHeightInp').value = (height / 72).toFixed(2);
+            docWidthInp.value = (width / 72).toFixed(2);
+            docHeightInp.value = (height / 72).toFixed(2);
+            
+            // Re-apply standard resolution logic dynamically on import
+            if (!docResInp.value) docResInp.value = "300"; 
+            
             document.getElementById('docSizeEditor').style.display = 'flex';
+            
+            // Set fundamental baselines on import
+            updateSizeCalculations('none'); 
         }
     } catch(e) { console.error("Could not parse size.", e); }
 }
@@ -309,8 +396,8 @@ function createWorkspaceElementDOM(data) {
 
 applySizeBtn.addEventListener('click', async () => {
     if(!currentPdfBytes) return;
-    const wInches = parseFloat(document.getElementById('docWidthInp').value);
-    const hInches = parseFloat(document.getElementById('docHeightInp').value);
+    const wInches = parseFloat(docWidthInp.value);
+    const hInches = parseFloat(docHeightInp.value);
     
     if(isNaN(wInches) || isNaN(hInches) || wInches <= 0 || hInches <= 0) return alert("[ ERROR ] Invalid numeric input for size.");
 
@@ -346,7 +433,7 @@ openPdfInput.addEventListener('change', async (e) => {
         pdfLayers = {}; 
         const buffer = await file.arrayBuffer();
         
-        isDocCMYK = detectCMYK(buffer); // Scan for CMYK profile
+        isDocCMYK = detectCMYK(buffer); 
         
         basePdfBytes = await (await PDFDocument.load(buffer)).save(); 
         updatePreview(basePdfBytes);
@@ -370,12 +457,10 @@ fileInput.addEventListener('change', async (e) => {
             const file = files[i];
             const arrayBuffer = await file.arrayBuffer();
             
-            if(detectCMYK(arrayBuffer)) isDocCMYK = true; // Update global state
+            if(detectCMYK(arrayBuffer)) isDocCMYK = true;
 
             if (file.type === 'application/pdf') {
                 const srcDoc = await PDFDocument.load(arrayBuffer);
-                
-                // Use the FIRST PDF as the structural base to preserve native CMYK ICC profiles
                 if (i === 0) {
                     targetPdf = srcDoc;
                 } else {
@@ -383,7 +468,7 @@ fileInput.addEventListener('change', async (e) => {
                 }
             } else {
                 hasRasterImages = true; 
-                if (!targetPdf) targetPdf = await PDFDocument.create(); // Fallback
+                if (!targetPdf) targetPdf = await PDFDocument.create(); 
                 
                 let imgData;
                 if (file.type === 'image/svg+xml') imgData = await targetPdf.embedPng(await svgToPngDataUrl(file));
@@ -803,7 +888,6 @@ applyEditsBtn.addEventListener('click', async () => {
                 if (data.type === 'text') {
                     const pdfFontSize = data.fontSize / 1.5; 
                     
-                    // [ NEW ] Dynamically inject the correct color profile
                     const textColor = isDocCMYK ? cmyk(0, 0, 0, 1) : rgb(0, 0, 0);
 
                     page.drawText(data.text, { 

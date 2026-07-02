@@ -57,11 +57,7 @@
             <div id="pdfCanvasContainer" class="pdf-canvas-container"></div>
             <iframe id="pdfPreview" title="PDF Preview"></iframe>
             <div class="pdf-nav-toolbar" id="pdfNavToolbar">
-                <button class="pdf-nav-btn" id="pdfPrevBtn" title="Previous Page">‹</button>
-                <span class="pdf-page-indicator">
-                    <input type="number" id="pdfPageInput" min="1" value="1"> / <span id="pdfPageCount">1</span>
-                </span>
-                <button class="pdf-nav-btn" id="pdfNextBtn" title="Next Page">›</button>
+                <span class="pdf-page-indicator">PAGE <span id="pdfCurrentPageDisplay">1</span> / <span id="pdfPageCount">1</span></span>
                 <span class="toolbar-divider"></span>
                 <button class="pdf-nav-btn" id="pdfZoomOutBtn" title="Zoom Out">−</button>
                 <span class="pdf-zoom-indicator" id="pdfZoomLevel">100%</span>

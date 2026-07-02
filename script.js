@@ -25,9 +25,7 @@ const viewerMessage = document.getElementById('viewerMessage');
 const pdfCanvasContainer = document.getElementById('pdfCanvasContainer');
 const pdfPreview = document.getElementById('pdfPreview');
 const pdfNavToolbar = document.getElementById('pdfNavToolbar');
-const pdfPrevBtn = document.getElementById('pdfPrevBtn');
-const pdfNextBtn = document.getElementById('pdfNextBtn');
-const pdfPageInput = document.getElementById('pdfPageInput');
+const pdfCurrentPageDisplay = document.getElementById('pdfCurrentPageDisplay');
 const pdfPageCount = document.getElementById('pdfPageCount');
 const pdfZoomOutBtn = document.getElementById('pdfZoomOutBtn');
 const pdfZoomInBtn = document.getElementById('pdfZoomInBtn');
@@ -302,8 +300,12 @@ let orgUndoStack = [];
 let orgRedoStack = [];
 let isDocCMYK = false; 
 let pdfJsDoc = null;
-let currentPreviewPage = 1;
 let previewZoom = 1;
+let visiblePreviewPage = 1;
+let pageVisibilityObserver = null;
+let isPinching = false;
+let pinchStartDistance = 0;
+let pinchStartZoom = 1;
 
 function detectCMYK(bytes) {
     const str = new TextDecoder('ascii', { fatal: false }).decode(bytes);
@@ -376,11 +378,10 @@ async function updatePreview(bytes) {
     } catch(e) { console.error("Could not parse size.", e); }
 }
 
-// Loads a PDF via pdf.js once, then renders one page at a time on demand.
-// Rendering a single page (instead of the whole document at once) keeps
-// memory use low on tablets and lets us drive real page-navigation controls,
-// since the browser's native PDF viewer (used previously via iframe) isn't
-// available inside an embedded iframe on Android Chrome.
+// Loads a PDF via pdf.js once, then renders every page into a continuously
+// scrollable column (like a native mobile PDF viewer) instead of one page
+// at a time. Page position is tracked via IntersectionObserver so the
+// toolbar's page counter updates automatically as you scroll.
 async function loadPdfPreview(bytes) {
     pdfCanvasContainer.innerHTML = `
         <div class="loader-container">
@@ -391,12 +392,13 @@ async function loadPdfPreview(bytes) {
 
     try {
         pdfJsDoc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
-        currentPreviewPage = 1;
         previewZoom = 1;
+        visiblePreviewPage = 1;
         pdfPageCount.textContent = pdfJsDoc.numPages;
-        pdfPageInput.max = pdfJsDoc.numPages;
+        pdfCurrentPageDisplay.textContent = '1';
+        pdfZoomLevel.textContent = '100%';
         pdfNavToolbar.style.display = 'flex';
-        await renderCurrentPdfPage();
+        await renderAllPdfPages();
     } catch (err) {
         console.error('Preview render failed:', err);
         pdfJsDoc = null;
@@ -409,62 +411,121 @@ async function loadPdfPreview(bytes) {
     }
 }
 
-async function renderCurrentPdfPage() {
+// Renders every page at the current zoom level into a fresh "zoom layer"
+// div. Called on initial load and again after zoom changes (button click or
+// pinch gesture) so pages stay crisp instead of blurring from a CSS scale.
+async function renderAllPdfPages() {
     if (!pdfJsDoc) return;
-    const numPages = pdfJsDoc.numPages;
-    currentPreviewPage = Math.min(Math.max(currentPreviewPage, 1), numPages);
+    if (pageVisibilityObserver) { pageVisibilityObserver.disconnect(); pageVisibilityObserver = null; }
 
-    const page = await pdfJsDoc.getPage(currentPreviewPage);
     const outputScale = Math.min(window.devicePixelRatio || 1, 2);
     const containerWidth = (pdfCanvasContainer.clientWidth || 800) - 40;
-    const containerHeight = (pdfCanvasContainer.clientHeight || 600) - 40;
-    const baseViewport = page.getViewport({ scale: 1 });
-    const fitScale = Math.max(Math.min(containerWidth / baseViewport.width, containerHeight / baseViewport.height), 0.25);
-    const finalScale = Math.min(fitScale * previewZoom, 4);
-    const viewport = page.getViewport({ scale: finalScale });
 
-    const canvas = document.createElement('canvas');
-    canvas.className = 'pdf-page-canvas';
-    canvas.width = Math.floor(viewport.width * outputScale);
-    canvas.height = Math.floor(viewport.height * outputScale);
-    canvas.style.width = Math.floor(viewport.width) + 'px';
-    canvas.style.height = Math.floor(viewport.height) + 'px';
+    const zoomLayer = document.createElement('div');
+    zoomLayer.id = 'pdfZoomLayer';
+    zoomLayer.className = 'pdf-zoom-layer';
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'pdf-page-wrapper';
-    wrapper.appendChild(canvas);
+    for (let i = 1; i <= pdfJsDoc.numPages; i++) {
+        const page = await pdfJsDoc.getPage(i);
+        const baseViewport = page.getViewport({ scale: 1 });
+        const fitScale = Math.max(containerWidth / baseViewport.width, 0.25);
+        const finalScale = Math.min(fitScale * previewZoom, 4);
+        const viewport = page.getViewport({ scale: finalScale });
+
+        const canvas = document.createElement('canvas');
+        canvas.className = 'pdf-page-canvas';
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+        canvas.style.width = Math.floor(viewport.width) + 'px';
+        canvas.style.height = Math.floor(viewport.height) + 'px';
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'pdf-page-wrapper';
+        wrapper.dataset.pageNumber = i;
+        wrapper.appendChild(canvas);
+        zoomLayer.appendChild(wrapper);
+
+        const ctx = canvas.getContext('2d');
+        const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
+        await page.render({ canvasContext: ctx, viewport, transform }).promise;
+    }
+
     pdfCanvasContainer.innerHTML = '';
-    pdfCanvasContainer.appendChild(wrapper);
-
-    const ctx = canvas.getContext('2d');
-    const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
-    await page.render({ canvasContext: ctx, viewport, transform }).promise;
-
-    pdfPageInput.value = currentPreviewPage;
-    pdfPrevBtn.disabled = currentPreviewPage <= 1;
-    pdfNextBtn.disabled = currentPreviewPage >= numPages;
+    pdfCanvasContainer.appendChild(zoomLayer);
     pdfZoomLevel.textContent = Math.round(previewZoom * 100) + '%';
+
+    setupPageVisibilityTracking(zoomLayer);
 }
 
-pdfPrevBtn.addEventListener('click', () => {
-    if (currentPreviewPage > 1) { currentPreviewPage--; renderCurrentPdfPage(); }
-});
-pdfNextBtn.addEventListener('click', () => {
-    if (pdfJsDoc && currentPreviewPage < pdfJsDoc.numPages) { currentPreviewPage++; renderCurrentPdfPage(); }
-});
-pdfPageInput.addEventListener('change', () => {
-    if (!pdfJsDoc) return;
-    const val = parseInt(pdfPageInput.value, 10);
-    if (!isNaN(val)) { currentPreviewPage = val; renderCurrentPdfPage(); }
-});
+function setupPageVisibilityTracking(zoomLayer) {
+    pageVisibilityObserver = new IntersectionObserver((entries) => {
+        let bestEntry = null;
+        entries.forEach(entry => {
+            if (entry.isIntersecting && (!bestEntry || entry.intersectionRatio > bestEntry.intersectionRatio)) {
+                bestEntry = entry;
+            }
+        });
+        if (bestEntry) {
+            visiblePreviewPage = parseInt(bestEntry.target.dataset.pageNumber, 10);
+            pdfCurrentPageDisplay.textContent = visiblePreviewPage;
+        }
+    }, { root: pdfCanvasContainer, threshold: [0.25, 0.5, 0.75] });
+
+    zoomLayer.querySelectorAll('.pdf-page-wrapper').forEach(w => pageVisibilityObserver.observe(w));
+}
+
 pdfZoomInBtn.addEventListener('click', () => {
     previewZoom = Math.min(previewZoom + 0.25, 3);
-    renderCurrentPdfPage();
+    renderAllPdfPages();
 });
 pdfZoomOutBtn.addEventListener('click', () => {
     previewZoom = Math.max(previewZoom - 0.25, 0.5);
-    renderCurrentPdfPage();
+    renderAllPdfPages();
 });
+
+// Two-finger pinch-to-zoom: gives live CSS-transform feedback while
+// pinching (cheap, instant), then commits the new zoom level and
+// re-renders the actual canvases at that resolution once fingers lift,
+// so the page stays sharp instead of staying blurry from the CSS scale.
+function getTouchDistance(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+}
+
+pdfCanvasContainer.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+        isPinching = true;
+        pinchStartDistance = getTouchDistance(e.touches);
+        pinchStartZoom = previewZoom;
+    }
+}, { passive: true });
+
+pdfCanvasContainer.addEventListener('touchmove', (e) => {
+    if (isPinching && e.touches.length === 2) {
+        e.preventDefault();
+        const currentDistance = getTouchDistance(e.touches);
+        const liveZoom = Math.min(Math.max(pinchStartZoom * (currentDistance / pinchStartDistance), 0.5), 4);
+        const zoomLayer = document.getElementById('pdfZoomLayer');
+        if (zoomLayer) zoomLayer.style.transform = `scale(${liveZoom / previewZoom})`;
+    }
+}, { passive: false });
+
+function endPinch() {
+    if (!isPinching) return;
+    isPinching = false;
+    const zoomLayer = document.getElementById('pdfZoomLayer');
+    if (zoomLayer) {
+        const match = /scale\(([^)]+)\)/.exec(zoomLayer.style.transform);
+        const appliedScale = match ? parseFloat(match[1]) : 1;
+        previewZoom = Math.min(Math.max(previewZoom * appliedScale, 0.5), 4);
+        zoomLayer.style.transform = 'none';
+    }
+    renderAllPdfPages();
+}
+
+pdfCanvasContainer.addEventListener('touchend', (e) => { if (e.touches.length < 2) endPinch(); });
+pdfCanvasContainer.addEventListener('touchcancel', endPinch);
 
 async function svgToPngDataUrl(file) {
     return new Promise((resolve) => {

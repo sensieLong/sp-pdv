@@ -22,7 +22,16 @@ const attachBtn = document.getElementById('attachBtn');
 const attachInput = document.getElementById('attachInput');
 const statusDisplay = document.getElementById('status');
 const viewerMessage = document.getElementById('viewerMessage');
+const pdfCanvasContainer = document.getElementById('pdfCanvasContainer');
 const pdfPreview = document.getElementById('pdfPreview');
+const pdfNavToolbar = document.getElementById('pdfNavToolbar');
+const pdfPrevBtn = document.getElementById('pdfPrevBtn');
+const pdfNextBtn = document.getElementById('pdfNextBtn');
+const pdfPageInput = document.getElementById('pdfPageInput');
+const pdfPageCount = document.getElementById('pdfPageCount');
+const pdfZoomOutBtn = document.getElementById('pdfZoomOutBtn');
+const pdfZoomInBtn = document.getElementById('pdfZoomInBtn');
+const pdfZoomLevel = document.getElementById('pdfZoomLevel');
 
 const applySizeBtn = document.getElementById('applySizeBtn');
 const docWidthInp = document.getElementById('docWidthInp');
@@ -292,10 +301,40 @@ let organizeState = [];
 let orgUndoStack = [];
 let orgRedoStack = [];
 let isDocCMYK = false; 
+let pdfJsDoc = null;
+let currentPreviewPage = 1;
+let previewZoom = 1;
 
 function detectCMYK(bytes) {
     const str = new TextDecoder('ascii', { fatal: false }).decode(bytes);
     return str.includes('/DeviceCMYK') || str.includes('CMYK');
+}
+
+// Decides which preview engine to use:
+// - Desktop PCs (Windows/macOS/Linux/ChromeOS) reliably render PDFs inline
+//   via the browser's native plugin, so we use the original lightweight
+//   iframe approach there.
+// - Android, other mobile/tablet devices, and anything we can't confidently
+//   identify fall back to the pdf.js canvas renderer, since embedded iframes
+//   can't display PDFs on Android Chrome (and we'd rather be safe on unknown
+//   devices than show a blank viewer).
+function detectIsDesktopPC() {
+    try {
+        if (navigator.userAgentData) {
+            if (typeof navigator.userAgentData.mobile === 'boolean' && navigator.userAgentData.mobile) {
+                return false; // Chromium reports this device as mobile
+            }
+            const platform = (navigator.userAgentData.platform || '').toLowerCase();
+            if (platform.includes('android')) return false;
+            if (['windows', 'macos', 'linux', 'chrome os'].some(p => platform.includes(p))) return true;
+        }
+    } catch (e) { /* fall through to UA sniffing */ }
+
+    const ua = navigator.userAgent || '';
+    if (/Android|iPhone|iPad|iPod|Mobile|Tablet|Silk|Kindle|PlayBook|BB10/i.test(ua)) return false;
+    if (/Windows NT|Macintosh|Mac OS X|Linux x86_64|CrOS/i.test(ua)) return true;
+
+    return false; // Unrecognized device: default to the safer canvas renderer
 }
 
 async function updatePreview(bytes) {
@@ -304,8 +343,19 @@ async function updatePreview(bytes) {
     if (currentPdfUrl) URL.revokeObjectURL(currentPdfUrl);
     currentPdfUrl = URL.createObjectURL(blob);
     viewerMessage.style.display = 'none';
-    pdfPreview.style.display = 'block';
-    pdfPreview.src = currentPdfUrl;
+
+    if (detectIsDesktopPC()) {
+        pdfCanvasContainer.style.display = 'none';
+        pdfNavToolbar.style.display = 'none';
+        pdfJsDoc = null;
+        pdfPreview.style.display = 'block';
+        pdfPreview.src = currentPdfUrl;
+    } else {
+        pdfPreview.style.display = 'none';
+        pdfPreview.src = '';
+        pdfCanvasContainer.style.display = 'flex';
+        await loadPdfPreview(bytes);
+    }
 
     try {
         const pdfDoc = await PDFDocument.load(bytes);
@@ -325,6 +375,96 @@ async function updatePreview(bytes) {
         }
     } catch(e) { console.error("Could not parse size.", e); }
 }
+
+// Loads a PDF via pdf.js once, then renders one page at a time on demand.
+// Rendering a single page (instead of the whole document at once) keeps
+// memory use low on tablets and lets us drive real page-navigation controls,
+// since the browser's native PDF viewer (used previously via iframe) isn't
+// available inside an embedded iframe on Android Chrome.
+async function loadPdfPreview(bytes) {
+    pdfCanvasContainer.innerHTML = `
+        <div class="loader-container">
+            <div class="cyber-spinner"></div>
+            <div class="loader-text">[ RENDERING PREVIEW... ]</div>
+        </div>`;
+    pdfNavToolbar.style.display = 'none';
+
+    try {
+        pdfJsDoc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+        currentPreviewPage = 1;
+        previewZoom = 1;
+        pdfPageCount.textContent = pdfJsDoc.numPages;
+        pdfPageInput.max = pdfJsDoc.numPages;
+        pdfNavToolbar.style.display = 'flex';
+        await renderCurrentPdfPage();
+    } catch (err) {
+        console.error('Preview render failed:', err);
+        pdfJsDoc = null;
+        pdfNavToolbar.style.display = 'none';
+        pdfCanvasContainer.innerHTML = `
+            <div class="viewer-message">
+                <h2 class="neon-text">[ PREVIEW ERROR ]</h2>
+                <p>Unable to render document preview. The file may be corrupted.</p>
+            </div>`;
+    }
+}
+
+async function renderCurrentPdfPage() {
+    if (!pdfJsDoc) return;
+    const numPages = pdfJsDoc.numPages;
+    currentPreviewPage = Math.min(Math.max(currentPreviewPage, 1), numPages);
+
+    const page = await pdfJsDoc.getPage(currentPreviewPage);
+    const outputScale = Math.min(window.devicePixelRatio || 1, 2);
+    const containerWidth = (pdfCanvasContainer.clientWidth || 800) - 40;
+    const containerHeight = (pdfCanvasContainer.clientHeight || 600) - 40;
+    const baseViewport = page.getViewport({ scale: 1 });
+    const fitScale = Math.max(Math.min(containerWidth / baseViewport.width, containerHeight / baseViewport.height), 0.25);
+    const finalScale = Math.min(fitScale * previewZoom, 4);
+    const viewport = page.getViewport({ scale: finalScale });
+
+    const canvas = document.createElement('canvas');
+    canvas.className = 'pdf-page-canvas';
+    canvas.width = Math.floor(viewport.width * outputScale);
+    canvas.height = Math.floor(viewport.height * outputScale);
+    canvas.style.width = Math.floor(viewport.width) + 'px';
+    canvas.style.height = Math.floor(viewport.height) + 'px';
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'pdf-page-wrapper';
+    wrapper.appendChild(canvas);
+    pdfCanvasContainer.innerHTML = '';
+    pdfCanvasContainer.appendChild(wrapper);
+
+    const ctx = canvas.getContext('2d');
+    const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
+    await page.render({ canvasContext: ctx, viewport, transform }).promise;
+
+    pdfPageInput.value = currentPreviewPage;
+    pdfPrevBtn.disabled = currentPreviewPage <= 1;
+    pdfNextBtn.disabled = currentPreviewPage >= numPages;
+    pdfZoomLevel.textContent = Math.round(previewZoom * 100) + '%';
+}
+
+pdfPrevBtn.addEventListener('click', () => {
+    if (currentPreviewPage > 1) { currentPreviewPage--; renderCurrentPdfPage(); }
+});
+pdfNextBtn.addEventListener('click', () => {
+    if (pdfJsDoc && currentPreviewPage < pdfJsDoc.numPages) { currentPreviewPage++; renderCurrentPdfPage(); }
+});
+pdfPageInput.addEventListener('change', () => {
+    if (!pdfJsDoc) return;
+    const val = parseInt(pdfPageInput.value, 10);
+    if (!isNaN(val)) { currentPreviewPage = val; renderCurrentPdfPage(); }
+});
+pdfZoomInBtn.addEventListener('click', () => {
+    previewZoom = Math.min(previewZoom + 0.25, 3);
+    renderCurrentPdfPage();
+});
+pdfZoomOutBtn.addEventListener('click', () => {
+    previewZoom = Math.max(previewZoom - 0.25, 0.5);
+    renderCurrentPdfPage();
+});
 
 async function svgToPngDataUrl(file) {
     return new Promise((resolve) => {

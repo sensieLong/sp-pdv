@@ -280,10 +280,28 @@
                     </ul>
                 </div>
                 <div class="doc-section">
-                    <h4>4. Compiling & Document Extraction</h4>
+                    <h4>4. Compiling, Resizing & Document Extraction</h4>
                     <ul>
-                        <li><strong>Document Resizing:</strong> Provide numeric metrics inside the top deck dashboard panels to override baseline sheet parameters securely.</li>
+                        <li><strong>Document Resizing:</strong> Once a document is loaded, a size control cluster appears in the top-right of the header, labeled <em>DOC SIZE (IN)</em>.
+                            <ul>
+                                <li>Enter target <strong>Width</strong> and <strong>Height</strong> in inches, or set a target <strong>Resolution</strong> in DPI — all three fields stay mathematically linked.</li>
+                                <li>The 🔗 icon between Width and Height is the <strong>Aspect Ratio Lock</strong> (linked by default): editing either dimension automatically recalculates the other to preserve proportions. Click it to unlink and set Width/Height independently — note that resizing with this unlinked will stretch the page content to fit the new dimensions, since content is rescaled to exactly fill the new page size.</li>
+                                <li>The 🔗 icon between Height and Resolution is the <strong>Resolution Lock</strong>: with it linked, changing the physical inches or the DPI keeps the underlying pixel dimensions constant (raising DPI shrinks the physical size for the same pixel count, and vice versa).</li>
+                                <li>Click <strong>RESIZE</strong> to bake in the new dimensions. This builds a fresh document with every page re-embedded and scaled into the specified page size, then refreshes the live preview automatically.</li>
+                            </ul>
+                        </li>
                         <li><strong>Export PDF:</strong> Compiles layered node logic safely into a finalized, download-ready portable data format document.</li>
+                    </ul>
+                </div>
+                <div class="doc-section">
+                    <h4>5. Adaptive Preview & Navigation Matrix</h4>
+                    <p>The render pipeline auto-detects your host hardware and switches preview engines accordingly, since not every browser can display a PDF the same way.</p>
+                    <ul>
+                        <li><strong>Desktop Terminals (Windows / macOS / Linux / ChromeOS):</strong> Uses the browser's native inline PDF plugin for maximum performance, including its built-in zoom, print, and text-selection controls.</li>
+                        <li><strong>Android / Tablet / Unclassified Devices:</strong> Switches to the internal canvas-rendering engine, since mobile browsers can't reliably display PDFs inside an embedded frame. Pages stream into a continuous vertical scroll, like a native mobile reader.</li>
+                        <li><strong>Page Thumbnail Rail:</strong> On mobile mode, a scrollable strip of page thumbnails runs along the left edge of the viewer. Tap any thumbnail to jump straight to that page; the rail auto-highlights and follows your current position as you scroll.</li>
+                        <li><strong>Floating Navigation Bar:</strong> Also mobile-only — a control cluster docked to the bottom of the screen shows your current page position and provides Zoom In / Zoom Out controls. It stays anchored to the true bottom edge of the display in both portrait and landscape, regardless of browser chrome.</li>
+                        <li><strong>Pinch-to-Zoom:</strong> On touchscreens, use a two-finger pinch gesture directly on the document to zoom smoothly. Release to lock in the new zoom level at full sharpness.</li>
                     </ul>
                 </div>
             </div>

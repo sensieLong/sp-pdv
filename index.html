@@ -54,7 +54,10 @@
                 <h2>[ SYSTEM READY ]</h2>
                 <p>Awaiting input. Click <strong class="neon-text">"Open PDF"</strong> or <strong class="neon-text">"Combine Files"</strong> to initialize workspace.</p>
             </div>
-            <div id="pdfCanvasContainer" class="pdf-canvas-container"></div>
+            <div class="pdf-preview-layout" id="pdfPreviewLayout">
+                <div id="pdfThumbRail" class="pdf-thumb-rail"></div>
+                <div id="pdfCanvasContainer" class="pdf-canvas-container"></div>
+            </div>
             <iframe id="pdfPreview" title="PDF Preview"></iframe>
             <div class="pdf-nav-toolbar" id="pdfNavToolbar">
                 <span class="pdf-page-indicator">PAGE <span id="pdfCurrentPageDisplay">1</span> / <span id="pdfPageCount">1</span></span>

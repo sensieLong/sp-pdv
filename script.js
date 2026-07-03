@@ -22,6 +22,8 @@ const attachBtn = document.getElementById('attachBtn');
 const attachInput = document.getElementById('attachInput');
 const statusDisplay = document.getElementById('status');
 const viewerMessage = document.getElementById('viewerMessage');
+const pdfPreviewLayout = document.getElementById('pdfPreviewLayout');
+const pdfThumbRail = document.getElementById('pdfThumbRail');
 const pdfCanvasContainer = document.getElementById('pdfCanvasContainer');
 const pdfPreview = document.getElementById('pdfPreview');
 const pdfNavToolbar = document.getElementById('pdfNavToolbar');
@@ -44,6 +46,7 @@ const sidebarRight = document.getElementById('sidebarRight');
 
 toolsMenuToggle.addEventListener('click', () => {
     sidebarRight.classList.toggle('collapsed');
+    setTimeout(positionPdfNavToolbar, 320); // wait out the 0.3s sidebar width transition
 });
 
 // Modals
@@ -347,7 +350,7 @@ async function updatePreview(bytes) {
     viewerMessage.style.display = 'none';
 
     if (detectIsDesktopPC()) {
-        pdfCanvasContainer.style.display = 'none';
+        pdfPreviewLayout.style.display = 'none';
         pdfNavToolbar.style.display = 'none';
         pdfJsDoc = null;
         pdfPreview.style.display = 'block';
@@ -355,7 +358,7 @@ async function updatePreview(bytes) {
     } else {
         pdfPreview.style.display = 'none';
         pdfPreview.src = '';
-        pdfCanvasContainer.style.display = 'flex';
+        pdfPreviewLayout.style.display = 'flex';
         await loadPdfPreview(bytes);
     }
 
@@ -378,16 +381,34 @@ async function updatePreview(bytes) {
     } catch(e) { console.error("Could not parse size.", e); }
 }
 
+// Keeps the fixed-position toolbar centered over the canvas preview area
+// (excluding the thumbnail rail), since position:fixed doesn't know about
+// our flex layout on its own. Re-run on resize/orientation/sidebar toggle.
+function positionPdfNavToolbar() {
+    if (!pdfNavToolbar || pdfNavToolbar.style.display === 'none') return;
+    const rect = pdfCanvasContainer.getBoundingClientRect();
+    if (!rect || rect.width === 0) return;
+    pdfNavToolbar.style.left = `${rect.left + rect.width / 2}px`;
+    pdfNavToolbar.style.transform = 'translateX(-50%)';
+}
+window.addEventListener('resize', positionPdfNavToolbar);
+window.addEventListener('orientationchange', () => setTimeout(positionPdfNavToolbar, 200));
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', positionPdfNavToolbar);
+}
+
 // Loads a PDF via pdf.js once, then renders every page into a continuously
 // scrollable column (like a native mobile PDF viewer) instead of one page
 // at a time. Page position is tracked via IntersectionObserver so the
-// toolbar's page counter updates automatically as you scroll.
+// toolbar's page counter (and the thumbnail rail's highlighted page)
+// update automatically as you scroll.
 async function loadPdfPreview(bytes) {
     pdfCanvasContainer.innerHTML = `
         <div class="loader-container">
             <div class="cyber-spinner"></div>
             <div class="loader-text">[ RENDERING PREVIEW... ]</div>
         </div>`;
+    pdfThumbRail.innerHTML = '';
     pdfNavToolbar.style.display = 'none';
 
     try {
@@ -398,11 +419,15 @@ async function loadPdfPreview(bytes) {
         pdfCurrentPageDisplay.textContent = '1';
         pdfZoomLevel.textContent = '100%';
         pdfNavToolbar.style.display = 'flex';
+        positionPdfNavToolbar();
+        await renderThumbRail();
         await renderAllPdfPages();
+        positionPdfNavToolbar();
     } catch (err) {
         console.error('Preview render failed:', err);
         pdfJsDoc = null;
         pdfNavToolbar.style.display = 'none';
+        pdfThumbRail.innerHTML = '';
         pdfCanvasContainer.innerHTML = `
             <div class="viewer-message">
                 <h2 class="neon-text">[ PREVIEW ERROR ]</h2>
@@ -468,10 +493,63 @@ function setupPageVisibilityTracking(zoomLayer) {
         if (bestEntry) {
             visiblePreviewPage = parseInt(bestEntry.target.dataset.pageNumber, 10);
             pdfCurrentPageDisplay.textContent = visiblePreviewPage;
+            updateActiveThumb(visiblePreviewPage);
         }
     }, { root: pdfCanvasContainer, threshold: [0.25, 0.5, 0.75] });
 
     zoomLayer.querySelectorAll('.pdf-page-wrapper').forEach(w => pageVisibilityObserver.observe(w));
+}
+
+// Renders a small thumbnail for every page into the left-hand rail.
+// Clicking a thumbnail scrolls the main preview to that page.
+async function renderThumbRail() {
+    if (!pdfJsDoc) return;
+    pdfThumbRail.innerHTML = '';
+
+    const thumbWidth = 70;
+    const outputScale = Math.min(window.devicePixelRatio || 1, 2);
+
+    for (let i = 1; i <= pdfJsDoc.numPages; i++) {
+        const page = await pdfJsDoc.getPage(i);
+        const baseViewport = page.getViewport({ scale: 1 });
+        const viewport = page.getViewport({ scale: thumbWidth / baseViewport.width });
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+
+        const item = document.createElement('div');
+        item.className = 'pdf-thumb-item';
+        item.dataset.pageNumber = i;
+
+        const label = document.createElement('div');
+        label.className = 'pdf-thumb-label';
+        label.textContent = i;
+
+        item.appendChild(canvas);
+        item.appendChild(label);
+        item.addEventListener('click', () => jumpToPreviewPage(i));
+        pdfThumbRail.appendChild(item);
+
+        const ctx = canvas.getContext('2d');
+        const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
+        await page.render({ canvasContext: ctx, viewport, transform }).promise;
+    }
+
+    updateActiveThumb(visiblePreviewPage);
+}
+
+function jumpToPreviewPage(pageNum) {
+    const wrapper = pdfCanvasContainer.querySelector(`.pdf-page-wrapper[data-page-number="${pageNum}"]`);
+    if (wrapper) wrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function updateActiveThumb(pageNum) {
+    pdfThumbRail.querySelectorAll('.pdf-thumb-item').forEach(item => {
+        const isActive = parseInt(item.dataset.pageNumber, 10) === pageNum;
+        item.classList.toggle('active', isActive);
+        if (isActive) item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
 }
 
 pdfZoomInBtn.addEventListener('click', () => {

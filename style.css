@@ -17,6 +17,7 @@ body {
     display: flex;
     flex-direction: column;
     height: 100vh;
+    height: 100dvh; /* tracks the browser's real visible viewport (address bar / gesture nav show-hide), so layout doesn't run off-screen in landscape */
     overflow: hidden;
 }
 
@@ -105,11 +106,64 @@ input[type=number] {
     border: none; background-color: #ffffff;
 }
 
-.pdf-canvas-container {
-    display: none;
+.pdf-preview-layout {
+    display: none; /* toggled to 'flex' by JS alongside the desktop/mobile detector */
+    width: 100%;
+    height: 100%;
+    overflow: hidden; /* rail and canvas each scroll independently */
+}
+
+.pdf-thumb-rail {
+    width: 90px;
+    flex-shrink: 0;
+    height: 100%;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background: rgba(0, 0, 0, 0.45);
+    border-right: 1px solid #222;
+    padding: 12px 8px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.pdf-thumb-item {
+    cursor: pointer;
+    display: flex;
     flex-direction: column;
     align-items: center;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    transition: all 0.2s;
+}
+.pdf-thumb-item:hover { border-color: rgba(0, 243, 255, 0.5); }
+.pdf-thumb-item.active { border-color: var(--neon-cyan); box-shadow: 0 0 8px rgba(0, 243, 255, 0.35); }
+.pdf-thumb-item.active .pdf-thumb-label { color: var(--neon-cyan); }
+
+.pdf-thumb-item canvas {
+    display: block;
     width: 100%;
+    height: auto;
+    background: #ffffff;
+    box-shadow: 0 0 6px rgba(0,0,0,0.6);
+    pointer-events: none;
+}
+
+.pdf-thumb-label {
+    font-size: 10px;
+    color: #888;
+    font-family: 'Share Tech Mono', monospace;
+}
+
+.pdf-canvas-container {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
     height: 100%;
     overflow: auto;
     -webkit-overflow-scrolling: touch;
@@ -137,9 +191,9 @@ input[type=number] {
 
 .pdf-nav-toolbar {
     display: none;
-    position: absolute;
-    bottom: 20px;
-    left: 50%;
+    position: fixed; /* anchored to the real device viewport, not the .viewer box, so it can't end up below the fold when mobile browser chrome changes the visible height in landscape */
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    left: 50%; /* JS recalculates this to stay centered over the canvas area (excluding the thumbnail rail) on resize/orientation change */
     transform: translateX(-50%);
     align-items: center;
     gap: 10px;
@@ -148,8 +202,9 @@ input[type=number] {
     box-shadow: 0 0 15px rgba(0, 243, 255, 0.25);
     padding: 8px 14px;
     border-radius: 4px;
-    z-index: 5;
+    z-index: 50;
     font-family: 'Share Tech Mono', monospace;
+    max-width: calc(100vw - 20px);
 }
 
 .pdf-nav-btn {

@@ -20,7 +20,14 @@
         <div class="header-right">
             
             <div class="doc-size-editor" id="docSizeEditor" style="display:none; align-items:center; gap:5px; margin-right: 15px; border-right: 1px solid #333; padding-right: 15px;">
-                <span style="color:var(--neon-cyan); font-size:12px; font-family:'Share Tech Mono', monospace;">DOC SIZE(IN):</span>
+                <span style="color:var(--neon-cyan); font-size:12px; font-family:'Share Tech Mono', monospace;">DOC SIZE:</span>
+                <select id="docUnitSelect" title="Unit of measurement" style="background:#111; color:var(--neon-cyan); border:1px solid var(--neon-cyan); font-family:'Share Tech Mono', monospace; font-size:12px; outline:none; padding:3px 2px;">
+                    <option value="in">in</option>
+                    <option value="cm">cm</option>
+                    <option value="mm">mm</option>
+                    <option value="pt">pt</option>
+                    <option value="px">px</option>
+                </select>
                 
                 <input type="number" id="docWidthInp" title="Width" step="0.01" style="width:55px; background:#111; color:var(--text-main); border:1px solid var(--neon-cyan); text-align:center; font-family:'Share Tech Mono', monospace; outline:none;">
                 
@@ -101,6 +108,10 @@
                 
                 <button class="tool-btn action-ready" id="exportBtn">
                     <span class="tool-icon">📤</span> <span class="tool-text">Export PDF</span>
+                </button>
+
+                <button class="tool-btn highlight" id="convertCmykExportBtn" style="display:none;">
+                    <span class="tool-icon">🎨</span> <span class="tool-text">Convert to CMYK then Export</span>
                 </button>
 
                 <div id="status"></div>
@@ -282,9 +293,10 @@
                 <div class="doc-section">
                     <h4>4. Compiling, Resizing & Document Extraction</h4>
                     <ul>
-                        <li><strong>Document Resizing:</strong> Once a document is loaded, a size control cluster appears in the top-right of the header, labeled <em>DOC SIZE (IN)</em>.
+                        <li><strong>Document Resizing:</strong> Once a document is loaded, a size control cluster appears in the top-right of the header, labeled <em>DOC SIZE</em>.
                             <ul>
-                                <li>Enter target <strong>Width</strong> and <strong>Height</strong> in inches, or set a target <strong>Resolution</strong> in DPI — all three fields stay mathematically linked.</li>
+                                <li>A unit selector next to the label lets you switch between <strong>inches, centimeters, millimeters, points, and pixels</strong> at any time. Switching units re-displays your current size in the new unit without changing the actual document dimensions — all size math happens internally in a fixed unit and only converts for display, so nothing drifts no matter how many times you switch.</li>
+                                <li>Enter target <strong>Width</strong> and <strong>Height</strong> in the selected unit, or set a target <strong>Resolution</strong> in DPI — all three fields stay mathematically linked. (Resolution is always dots-per-inch regardless of which size unit is selected, and also governs the Pixels unit's conversion, since pixel dimensions depend on DPI.)</li>
                                 <li>The 🔗 icon between Width and Height is the <strong>Aspect Ratio Lock</strong> (linked by default): editing either dimension automatically recalculates the other to preserve proportions. Click it to unlink and set Width/Height independently — note that resizing with this unlinked will stretch the page content to fit the new dimensions, since content is rescaled to exactly fill the new page size.</li>
                                 <li>The 🔗 icon between Height and Resolution is the <strong>Resolution Lock</strong>: with it linked, changing the physical inches or the DPI keeps the underlying pixel dimensions constant (raising DPI shrinks the physical size for the same pixel count, and vice versa).</li>
                                 <li>Click <strong>RESIZE</strong> to bake in the new dimensions. This builds a fresh document with every page re-embedded and scaled into the specified page size, then refreshes the live preview automatically.</li>

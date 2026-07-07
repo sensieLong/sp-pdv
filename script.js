@@ -4,10 +4,11 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Access Libraries (CMYK included)
-const { PDFDocument, rgb, cmyk, degrees } = PDFLib;
+const { PDFDocument, rgb, cmyk, degrees, PDFName } = PDFLib;
 const pdfjsLib = window['pdfjs-dist/build/pdf'];
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+const MAX_PDFJS_IMAGE_PIXELS = 4096 * 4096; // ~16.8 million pixels; protects against OOM on huge embedded raster images (e.g. large-format print PDFs)
 
 // DOM Elements
 const openPdfBtn = document.getElementById('openPdfBtn');
@@ -15,6 +16,7 @@ const openPdfInput = document.getElementById('openPdfInput');
 const combineBtn = document.getElementById('combineBtn');
 const fileInput = document.getElementById('fileInput');
 const exportBtn = document.getElementById('exportBtn');
+const convertCmykExportBtn = document.getElementById('convertCmykExportBtn');
 const organizeBtn = document.getElementById('organizeBtn');
 const splitBtn = document.getElementById('splitBtn');
 const editPdfBtn = document.getElementById('editPdfBtn');
@@ -39,6 +41,7 @@ const docHeightInp = document.getElementById('docHeightInp');
 const docResInp = document.getElementById('docResInp');
 const linkWhBtn = document.getElementById('linkWhBtn');
 const linkHResBtn = document.getElementById('linkHResBtn');
+const docUnitSelect = document.getElementById('docUnitSelect');
 
 // Sidebar Toggle Logic
 const toolsMenuToggle = document.getElementById('toolsMenuToggle');
@@ -215,21 +218,60 @@ let aspectRatio = 1;
 let basePixelsW = 0;
 let basePixelsH = 0;
 let isUpdatingSize = false;
+let previousSizeUnit = 'in';
+
+// Points-per-unit for physical units (72pt = 1 inch, the PDF native unit).
+// Pixels aren't a fixed physical size — they depend on resolution (DPI),
+// so they're handled separately via the res parameter below.
+function unitToInches(value, unit, res) {
+    if (isNaN(value)) return NaN;
+    switch (unit) {
+        case 'cm': return value / 2.54;
+        case 'mm': return value / 25.4;
+        case 'pt': return value / 72;
+        case 'px': return value / (res > 0 ? res : 300);
+        case 'in':
+        default: return value;
+    }
+}
+function inchesToUnit(inches, unit, res) {
+    switch (unit) {
+        case 'cm': return inches * 2.54;
+        case 'mm': return inches * 25.4;
+        case 'pt': return inches * 72;
+        case 'px': return inches * (res > 0 ? res : 300);
+        case 'in':
+        default: return inches;
+    }
+}
+function unitToPoints(value, unit, res) {
+    return unitToInches(value, unit, res) * 72;
+}
+function formatUnitValue(value, unit) {
+    return unit === 'px' ? Math.round(value).toString() : value.toFixed(2);
+}
 
 function updateSizeCalculations(source) {
     if(isUpdatingSize) return;
     isUpdatingSize = true;
-    
-    let w = parseFloat(docWidthInp.value);
-    let h = parseFloat(docHeightInp.value);
-    let res = parseFloat(docResInp.value);
+
+    const unit = docUnitSelect.value;
+    const res0 = parseFloat(docResInp.value);
+
+    // All size math below happens in inches (unit-agnostic canonical
+    // form) — only reading/writing the visible inputs converts through
+    // whichever unit is currently selected, so switching units never
+    // changes the actual document size, just how it's displayed.
+    let w = unitToInches(parseFloat(docWidthInp.value), unit, res0);
+    let h = unitToInches(parseFloat(docHeightInp.value), unit, res0);
+    let res = res0;
 
     // Only process mathematically if all fields contain valid numbers above 0
     if (w > 0 && h > 0 && res > 0) {
         if (source === 'w') {
             if (!linkWhBtn.classList.contains('unlinked')) {
                 h = w / aspectRatio;
-                docHeightInp.value = h.toFixed(2);
+                docHeightInp.value = formatUnitValue(inchesToUnit(h, unit, res), unit);
             }
             if (!linkHResBtn.classList.contains('unlinked')) {
                 res = basePixelsH / h;
@@ -238,7 +280,7 @@ function updateSizeCalculations(source) {
         } else if (source === 'h') {
             if (!linkWhBtn.classList.contains('unlinked')) {
                 w = h * aspectRatio;
-                docWidthInp.value = w.toFixed(2);
+                docWidthInp.value = formatUnitValue(inchesToUnit(w, unit, res), unit);
             }
             if (!linkHResBtn.classList.contains('unlinked')) {
                 res = basePixelsH / h;
@@ -247,26 +289,26 @@ function updateSizeCalculations(source) {
         } else if (source === 'res') {
             if (!linkHResBtn.classList.contains('unlinked')) {
                 h = basePixelsH / res;
-                docHeightInp.value = h.toFixed(2);
+                docHeightInp.value = formatUnitValue(inchesToUnit(h, unit, res), unit);
                 if (!linkWhBtn.classList.contains('unlinked')) {
                     w = h * aspectRatio;
-                    docWidthInp.value = w.toFixed(2);
+                    docWidthInp.value = formatUnitValue(inchesToUnit(w, unit, res), unit);
                 }
             }
         }
     }
-    
-    // Update baseline states to reflect the new geometry
-    w = parseFloat(docWidthInp.value);
-    h = parseFloat(docHeightInp.value);
+
+    // Update baseline states (in inches/pixels — unit-agnostic) to reflect the new geometry
+    w = unitToInches(parseFloat(docWidthInp.value), unit, parseFloat(docResInp.value));
+    h = unitToInches(parseFloat(docHeightInp.value), unit, parseFloat(docResInp.value));
     res = parseFloat(docResInp.value);
-    
+
     if (w > 0 && h > 0 && res > 0) {
         aspectRatio = w / h;
         basePixelsW = w * res;
         basePixelsH = h * res;
     }
-    
+
     isUpdatingSize = false;
 }
 
@@ -274,6 +316,27 @@ function updateSizeCalculations(source) {
 docWidthInp.addEventListener('input', () => updateSizeCalculations('w'));
 docHeightInp.addEventListener('input', () => updateSizeCalculations('h'));
 docResInp.addEventListener('input', () => updateSizeCalculations('res'));
+
+// Switching units re-displays the SAME physical size in the new unit —
+// it converts the currently shown values (interpreted in the unit they
+// were just displayed in) rather than re-deriving anything, so no
+// rounding drift accumulates beyond the display itself.
+docUnitSelect.addEventListener('change', () => {
+    const res = parseFloat(docResInp.value) || 300;
+    const wOld = parseFloat(docWidthInp.value);
+    const hOld = parseFloat(docHeightInp.value);
+    const newUnit = docUnitSelect.value;
+
+    if (!isNaN(wOld) && !isNaN(hOld)) {
+        const wInches = unitToInches(wOld, previousSizeUnit, res);
+        const hInches = unitToInches(hOld, previousSizeUnit, res);
+        docWidthInp.value = formatUnitValue(inchesToUnit(wInches, newUnit, res), newUnit);
+        docHeightInp.value = formatUnitValue(inchesToUnit(hInches, newUnit, res), newUnit);
+    }
+    docWidthInp.step = newUnit === 'px' ? '1' : '0.01';
+    docHeightInp.step = newUnit === 'px' ? '1' : '0.01';
+    previousSizeUnit = newUnit;
+});
 
 linkWhBtn.addEventListener('click', () => {
     linkWhBtn.classList.toggle('unlinked');
@@ -302,7 +365,18 @@ let organizeState = [];
 let orgUndoStack = [];
 let orgRedoStack = [];
 let isDocCMYK = false; 
+let importedBaseFileName = 'Spiokoks_Document';
 let pdfJsDoc = null;
+
+function getBaseFileName(name) {
+    return name.replace(/\.[^/.]+$/, '') || 'Spiokoks_Document';
+}
+
+function updateCmykButtonVisibility() {
+    // No auto-detection anymore (it was unreliable and slow) — just offer
+    // the option whenever a document is loaded and let the user decide.
+    convertCmykExportBtn.style.display = currentPdfBytes ? 'flex' : 'none';
+}
 let previewZoom = 1;
 let visiblePreviewPage = 1;
 let pageVisibilityObserver = null;
@@ -310,9 +384,28 @@ let isPinching = false;
 let pinchStartDistance = 0;
 let pinchStartZoom = 1;
 
-function detectCMYK(bytes) {
-    const str = new TextDecoder('ascii', { fatal: false }).decode(bytes);
-    return str.includes('/DeviceCMYK') || str.includes('CMYK');
+
+// Minimal JPEG SOF-marker parser: a standalone image file (not yet wrapped
+// in a PDF) has no PDF structure to inspect, but its component count is a
+// precise, well-defined signal — 4 components means CMYK/YCCK.
+function jpegHasCmykComponents(bytes) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (data.length < 4 || data[0] !== 0xFF || data[1] !== 0xD8) return false;
+    let offset = 2;
+    while (offset < data.length - 1) {
+        if (data[offset] !== 0xFF) { offset++; continue; }
+        const marker = data[offset + 1];
+        if (marker === 0xD8 || marker === 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) { offset += 2; continue; }
+        const isSOF = (marker >= 0xC0 && marker <= 0xC3) || (marker >= 0xC5 && marker <= 0xC7) || (marker >= 0xC9 && marker <= 0xCF && marker !== 0xCC);
+        if (isSOF) {
+            const numComponents = data[offset + 9];
+            return numComponents === 4;
+        }
+        const segLength = (data[offset + 2] << 8) | data[offset + 3];
+        if (segLength < 2) break;
+        offset += 2 + segLength;
+    }
+    return false;
 }
 
 // Decides which preview engine to use:
@@ -363,15 +456,18 @@ async function updatePreview(bytes) {
     }
 
     try {
-        const pdfDoc = await PDFDocument.load(bytes);
+        const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
         if(pdfDoc.getPageCount() > 0) {
             const page = pdfDoc.getPage(0);
-            const { width, height } = page.getSize();
-            docWidthInp.value = (width / 72).toFixed(2);
-            docHeightInp.value = (height / 72).toFixed(2);
+            const { width, height } = page.getSize(); // exact, in points (the PDF's native unit)
             
             // Re-apply standard resolution logic dynamically on import
             if (!docResInp.value) docResInp.value = "300"; 
+            const res = parseFloat(docResInp.value) || 300;
+            const unit = docUnitSelect.value;
+            
+            docWidthInp.value = formatUnitValue(inchesToUnit(width / 72, unit, res), unit);
+            docHeightInp.value = formatUnitValue(inchesToUnit(height / 72, unit, res), unit);
             
             document.getElementById('docSizeEditor').style.display = 'flex';
             
@@ -412,7 +508,7 @@ async function loadPdfPreview(bytes) {
     pdfNavToolbar.style.display = 'none';
 
     try {
-        pdfJsDoc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+        pdfJsDoc = await pdfjsLib.getDocument({ data: bytes.slice(0) , maxImageSize: MAX_PDFJS_IMAGE_PIXELS }).promise;
         previewZoom = 1;
         visiblePreviewPage = 1;
         pdfPageCount.textContent = pdfJsDoc.numPages;
@@ -470,9 +566,14 @@ async function renderAllPdfPages() {
         wrapper.appendChild(canvas);
         zoomLayer.appendChild(wrapper);
 
-        const ctx = canvas.getContext('2d');
-        const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
-        await page.render({ canvasContext: ctx, viewport, transform }).promise;
+        try {
+            const ctx = canvas.getContext('2d');
+            const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
+            await page.render({ canvasContext: ctx, viewport, transform }).promise;
+        } catch (err) {
+            console.warn(`[Preview] page ${i} failed to render, showing placeholder:`, err);
+            wrapper.innerHTML = `<div class="viewer-message" style="padding:20px;"><p class="neon-text">[ PAGE ${i}: RENDER FAILED ]</p></div>`;
+        }
     }
 
     pdfCanvasContainer.innerHTML = '';
@@ -531,9 +632,13 @@ async function renderThumbRail() {
         item.addEventListener('click', () => jumpToPreviewPage(i));
         pdfThumbRail.appendChild(item);
 
-        const ctx = canvas.getContext('2d');
-        const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
-        await page.render({ canvasContext: ctx, viewport, transform }).promise;
+        try {
+            const ctx = canvas.getContext('2d');
+            const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
+            await page.render({ canvasContext: ctx, viewport, transform }).promise;
+        } catch (err) {
+            console.warn(`[Thumb rail] page ${i} thumbnail failed to render:`, err);
+        }
     }
 
     updateActiveThumb(visiblePreviewPage);
@@ -675,17 +780,19 @@ function createWorkspaceElementDOM(data) {
 
 applySizeBtn.addEventListener('click', async () => {
     if(!currentPdfBytes) return;
-    const wInches = parseFloat(docWidthInp.value);
-    const hInches = parseFloat(docHeightInp.value);
+    const unit = docUnitSelect.value;
+    const res = parseFloat(docResInp.value) || 300;
+    const wRaw = parseFloat(docWidthInp.value);
+    const hRaw = parseFloat(docHeightInp.value);
     
-    if(isNaN(wInches) || isNaN(hInches) || wInches <= 0 || hInches <= 0) return alert("[ ERROR ] Invalid numeric input for size.");
+    if(isNaN(wRaw) || isNaN(hRaw) || wRaw <= 0 || hRaw <= 0) return alert("[ ERROR ] Invalid numeric input for size.");
 
-    const newWPoints = wInches * 72;
-    const newHPoints = hInches * 72;
+    const newWPoints = unitToPoints(wRaw, unit, res);
+    const newHPoints = unitToPoints(hRaw, unit, res);
 
     statusDisplay.innerText = '[ RESIZING DOCUMENT... ]';
     try {
-        const sourceDoc = await PDFDocument.load(currentPdfBytes);
+        const sourceDoc = await PDFDocument.load(currentPdfBytes, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
         const embeddedPages = await newDoc.embedPages(sourceDoc.getPages());
 
@@ -712,13 +819,16 @@ openPdfInput.addEventListener('change', async (e) => {
         pdfLayers = {}; 
         const buffer = await file.arrayBuffer();
         
-        isDocCMYK = detectCMYK(buffer); 
+        const loadedDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+        isDocCMYK = false; // no auto-detection anymore; the CMYK export option is just always offered
+        importedBaseFileName = getBaseFileName(file.name);
         
-        basePdfBytes = await (await PDFDocument.load(buffer)).save(); 
+        basePdfBytes = await loadedDoc.save(); 
         updatePreview(basePdfBytes);
+        updateCmykButtonVisibility();
         
-        statusDisplay.innerText = isDocCMYK ? '[ SYSTEM: PDF LOADED (CMYK DETECTED) ]' : '[ SYSTEM: PDF LOADED ]';
-    } catch (error) { statusDisplay.innerText = '[ ERROR: LOAD FAILED ]'; }
+        statusDisplay.innerText = '[ SYSTEM: PDF LOADED ]';
+    } catch (error) { console.error('[ Open PDF ] load failed:', error); statusDisplay.innerText = '[ ERROR: LOAD FAILED ]'; }
 });
 
 combineBtn.addEventListener('click', () => fileInput.click());
@@ -729,6 +839,7 @@ fileInput.addEventListener('change', async (e) => {
     pdfLayers = {}; 
     let hasRasterImages = false; 
     isDocCMYK = false;
+    importedBaseFileName = getBaseFileName(files[0].name);
 
     try {
         let targetPdf;
@@ -736,16 +847,15 @@ fileInput.addEventListener('change', async (e) => {
             const file = files[i];
             const arrayBuffer = await file.arrayBuffer();
             
-            if(detectCMYK(arrayBuffer)) isDocCMYK = true;
-
             if (file.type === 'application/pdf') {
-                const srcDoc = await PDFDocument.load(arrayBuffer);
+                const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
                 if (i === 0) {
                     targetPdf = srcDoc;
                 } else {
                     (await targetPdf.copyPages(srcDoc, srcDoc.getPageIndices())).forEach(p => targetPdf.addPage(p));
                 }
             } else {
+                if (file.type === 'image/jpeg' && jpegHasCmykComponents(new Uint8Array(arrayBuffer))) isDocCMYK = true;
                 hasRasterImages = true; 
                 if (!targetPdf) targetPdf = await PDFDocument.create(); 
                 
@@ -763,12 +873,13 @@ fileInput.addEventListener('change', async (e) => {
         }
         basePdfBytes = await targetPdf.save(); 
         updatePreview(basePdfBytes);
+        updateCmykButtonVisibility();
         
         let statusText = hasRasterImages ? '[ MERGED: FLAT IMAGES ]' : '[ FILES MERGED ]';
         if(isDocCMYK) statusText += ' [ CMYK INTEGRITY PRESERVED ]';
         statusDisplay.innerText = statusText;
         
-    } catch (err) { statusDisplay.innerText = '[ ERROR: MERGE FAILED ]'; }
+    } catch (err) { console.error('[ Combine Files ] merge failed:', err); statusDisplay.innerText = '[ ERROR: MERGE FAILED ]'; }
 });
 
 function saveOrgState() { orgUndoStack.push(JSON.parse(JSON.stringify(organizeState))); orgRedoStack = []; }
@@ -798,7 +909,7 @@ organizeBtn.addEventListener('click', async () => {
     organizeState = []; orgUndoStack = []; orgRedoStack = [];
 
     try {
-        const pdf = await pdfjsLib.getDocument({ data: currentPdfBytes.slice(0) }).promise;
+        const pdf = await pdfjsLib.getDocument({ data: currentPdfBytes.slice(0) , maxImageSize: MAX_PDFJS_IMAGE_PIXELS }).promise;
         for (let i = 1; i <= pdf.numPages; i++) {
             const page = await pdf.getPage(i);
             const viewport = page.getViewport({ scale: 0.4 });
@@ -821,7 +932,7 @@ orgAddInput.addEventListener('change', async (e) => {
     statusDisplay.innerText = '[ PROCESSING INSERTION... ]';
     
     try {
-        const sourceDoc = await PDFDocument.load(currentPdfBytes);
+        const sourceDoc = await PDFDocument.load(currentPdfBytes, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
 
         for (const pageObj of organizeState) {
@@ -836,7 +947,7 @@ orgAddInput.addEventListener('change', async (e) => {
         const { width: refW, height: refH } = lastPage.getSize();
 
         if (file.type === 'application/pdf') {
-            const addedDoc = await PDFDocument.load(await file.arrayBuffer());
+            const addedDoc = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
             const embeddedPages = await newDoc.embedPages(addedDoc.getPages());
             
             embeddedPages.forEach((embPage) => {
@@ -883,7 +994,7 @@ orgAddBlankBtn.addEventListener('click', async () => {
     statusDisplay.innerText = '[ ADDING BLANK PAGE... ]';
     
     try {
-        const sourceDoc = await PDFDocument.load(currentPdfBytes);
+        const sourceDoc = await PDFDocument.load(currentPdfBytes, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
 
         for (const pageObj of organizeState) {
@@ -959,7 +1070,7 @@ applyOrgBtn.addEventListener('click', async () => {
     statusDisplay.innerText = '[ COMPILING STRUCTURAL CHANGES... ]';
     
     try {
-        const sourceDoc = await PDFDocument.load(currentPdfBytes);
+        const sourceDoc = await PDFDocument.load(currentPdfBytes, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
 
         for (const pageObj of organizeState) {
@@ -973,7 +1084,7 @@ applyOrgBtn.addEventListener('click', async () => {
         updatePreview(basePdfBytes);
         organizeModal.style.display = 'none';
         statusDisplay.innerText = '[ REORGANIZATION SUCCESSFUL ]';
-    } catch (error) { statusDisplay.innerText = '[ ERROR: REORG FAILED ]'; }
+    } catch (error) { console.error('[ Organize ] reorg failed:', error); statusDisplay.innerText = '[ ERROR: REORG FAILED ]'; }
 });
 
 orgUndoBtn.addEventListener('click', () => {
@@ -1002,7 +1113,7 @@ async function openWorkspace(pageNum) {
     statusDisplay.innerText = "[ INITIALIZING WORKSPACE... ]";
 
     try {
-        const pdf = await pdfjsLib.getDocument({ data: basePdfBytes.slice(0) }).promise;
+        const pdf = await pdfjsLib.getDocument({ data: basePdfBytes.slice(0) , maxImageSize: MAX_PDFJS_IMAGE_PIXELS }).promise;
         const page = await pdf.getPage(currentEditPage);
         const viewport = page.getViewport({ scale: 1.5 }); 
 
@@ -1138,7 +1249,7 @@ attachInput.addEventListener('change', (e) => {
 applyEditsBtn.addEventListener('click', async () => {
     statusDisplay.innerText = "[ PROCESSING OVERLAYS... ]";
     try {
-        const pdfDoc = await PDFDocument.load(basePdfBytes);
+        const pdfDoc = await PDFDocument.load(basePdfBytes, { ignoreEncryption: true });
         pdfLayers[currentEditPage] = [];
         document.querySelectorAll('.draggable-item').forEach(item => {
             pdfLayers[currentEditPage].push({
@@ -1200,7 +1311,7 @@ splitBtn.addEventListener('click', async () => {
 
     statusDisplay.innerText = '[ SPLITTING DOCUMENT... ]';
     try {
-        const sourcePdfDoc = await PDFDocument.load(currentPdfBytes); 
+        const sourcePdfDoc = await PDFDocument.load(currentPdfBytes, { ignoreEncryption: true }); 
         const totalPages = sourcePdfDoc.getPageCount();
         let partCounter = 1;
 
@@ -1216,7 +1327,7 @@ splitBtn.addEventListener('click', async () => {
             setTimeout(() => URL.revokeObjectURL(splitUrl), 100);
         }
         statusDisplay.innerText = `[ SPLIT SUCCESS: ${partCounter - 1} PARTS ]`;
-    } catch (error) { statusDisplay.innerText = '[ ERROR: SPLIT FAILED ]'; }
+    } catch (error) { console.error('[ Split ] split failed:', error); statusDisplay.innerText = '[ ERROR: SPLIT FAILED ]'; }
 });
 
 exportBtn.addEventListener('click', () => {
@@ -1228,7 +1339,7 @@ exportBtn.addEventListener('click', () => {
     setTimeout(() => {
         const link = document.createElement('a');
         link.href = currentPdfUrl; 
-        link.download = 'Spiokoks_Document_Final.pdf';
+        link.download = `${importedBaseFileName}_Combined.pdf`;
         document.body.appendChild(link); 
         link.click(); 
         document.body.removeChild(link);
@@ -1236,4 +1347,89 @@ exportBtn.addEventListener('click', () => {
         exportModal.style.display = 'none';
         statusDisplay.innerText = '[ EXPORT OPERATIONAL COMPLETE ]';
     }, 1500);
+});
+
+// Rasterizes each page via pdf.js and remaps every pixel through the CMYK
+// gamut before re-flattening it back to an image. Note: browsers have no
+// native way to author a PDF with a true /DeviceCMYK colorspace tag on live
+// vector content (there's no in-browser CMYK JPEG encoder), so this bakes
+// each page down to a print-safe-color raster image instead — the same
+// image-embedding technique already used by the Combine Files flow.
+async function convertPdfPagesToCmykRaster(bytes) {
+    const srcPdf = await pdfjsLib.getDocument({ data: bytes.slice(0) , maxImageSize: MAX_PDFJS_IMAGE_PIXELS }).promise;
+    const outDoc = await PDFDocument.create();
+
+    const targetDpi = 300; // print-quality baseline (PDF points are 72/inch)
+    const maxCanvasDim = 4500; // safety cap so oversized pages don't blow past mobile canvas/memory limits
+
+    for (let i = 1; i <= srcPdf.numPages; i++) {
+        const page = await srcPdf.getPage(i);
+        const basePageSize = page.getViewport({ scale: 1 });
+
+        let renderScale = targetDpi / 72;
+        const largestProjectedDim = Math.max(basePageSize.width, basePageSize.height) * renderScale;
+        if (largestProjectedDim > maxCanvasDim) {
+            renderScale *= maxCanvasDim / largestProjectedDim;
+        }
+        const viewport = page.getViewport({ scale: renderScale });
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        for (let p = 0; p < data.length; p += 4) {
+            const r = data[p] / 255, g = data[p + 1] / 255, b = data[p + 2] / 255;
+            const k = 1 - Math.max(r, g, b);
+            const c = k < 1 ? (1 - r - k) / (1 - k) : 0;
+            const m = k < 1 ? (1 - g - k) / (1 - k) : 0;
+            const y = k < 1 ? (1 - b - k) / (1 - k) : 0;
+            data[p]     = Math.round(255 * (1 - c) * (1 - k));
+            data[p + 1] = Math.round(255 * (1 - m) * (1 - k));
+            data[p + 2] = Math.round(255 * (1 - y) * (1 - k));
+        }
+        ctx.putImageData(imageData, 0, 0);
+
+        // PNG instead of JPEG: lossless, so the CMYK color remap is the only
+        // change applied to the pixels — no compression artifacts stacked
+        // on top of it.
+        const pngBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+        const embeddedImg = await outDoc.embedPng(pngBytes);
+
+        const newPage = outDoc.addPage([basePageSize.width, basePageSize.height]);
+        newPage.drawImage(embeddedImg, { x: 0, y: 0, width: basePageSize.width, height: basePageSize.height });
+    }
+
+    return outDoc.save();
+}
+
+convertCmykExportBtn.addEventListener('click', async () => {
+    if (!currentPdfBytes) return alert('[ ERROR ] No document to export.');
+
+    exportModal.style.display = 'flex';
+    statusDisplay.innerText = '[ CONVERTING TO CMYK... ]';
+
+    try {
+        const cmykBytes = await convertPdfPagesToCmykRaster(currentPdfBytes);
+        const cmykUrl = URL.createObjectURL(new Blob([cmykBytes], { type: 'application/pdf' }));
+
+        const link = document.createElement('a');
+        link.href = cmykUrl;
+        link.download = `${importedBaseFileName}_Combined_CMYK.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(cmykUrl);
+
+        exportModal.style.display = 'none';
+        statusDisplay.innerText = '[ CMYK EXPORT COMPLETE ]';
+    } catch (err) {
+        console.error(err);
+        exportModal.style.display = 'none';
+        statusDisplay.innerText = '[ ERROR: CMYK CONVERSION FAILED ]';
+    }
 });

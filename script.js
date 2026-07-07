@@ -166,6 +166,47 @@ logoutMenuBtn.addEventListener('click', async () => {
     checkSession();
 });
 
+const unsubscribeBtn = document.getElementById('unsubscribeBtn');
+unsubscribeBtn.addEventListener('click', async () => {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (!session) {
+        alert('[ ERROR ] You must be logged in to unsubscribe.');
+        return;
+    }
+
+    const confirmed = confirm(
+        '[ WARNING ] This will permanently delete your profile and donation record from our database. ' +
+        'This cannot be undone. Your account will lose its Donator status, and any donation history on file will be erased.\n\n' +
+        'Click OK to permanently delete your data, or Cancel to keep your account.'
+    );
+    if (!confirmed) return;
+
+    unsubscribeBtn.disabled = true;
+    unsubscribeBtn.querySelector('.tool-text').innerText = 'Deleting...';
+
+    try {
+        const { error } = await supabaseClient
+            .from('profiles')
+            .delete()
+            .eq('id', session.user.id);
+
+        if (error) {
+            alert(`[ ERROR ] Could not delete your data: ${error.message}`);
+        } else {
+            alert('[ SYSTEM ] Your profile and donation data have been deleted. You will now be logged out.');
+            await supabaseClient.auth.signOut();
+            checkSession();
+            donateModal.style.display = 'none';
+        }
+    } catch (e) {
+        console.error('[ Unsubscribe ] delete failed:', e);
+        alert('[ ERROR ] Something went wrong while deleting your data. Please try again.');
+    } finally {
+        unsubscribeBtn.disabled = false;
+        unsubscribeBtn.querySelector('.tool-text').innerText = 'Unsubscribe & Delete My Data';
+    }
+});
+
 async function checkSession() {
     const { data: { session } } = await supabaseClient.auth.getSession();
     

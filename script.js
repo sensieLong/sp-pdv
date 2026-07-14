@@ -36,6 +36,7 @@ const pdfZoomInBtn = document.getElementById('pdfZoomInBtn');
 const pdfZoomLevel = document.getElementById('pdfZoomLevel');
 
 const applySizeBtn = document.getElementById('applySizeBtn');
+const cropToGuidesBtn = document.getElementById('cropToGuidesBtn');
 const docWidthInp = document.getElementById('docWidthInp');
 const docHeightInp = document.getElementById('docHeightInp');
 const docResInp = document.getElementById('docResInp');
@@ -71,6 +72,20 @@ const canvasWrapper = document.getElementById('canvasWrapper');
 const globalTrashBtn = document.getElementById('globalTrashBtn');
 const undoBtn = document.getElementById('undoBtn');
 const redoBtn = document.getElementById('redoBtn');
+
+const workspaceContainer = document.getElementById('workspaceContainer');
+const rulerCorner = document.getElementById('rulerCorner');
+const rulerHorizontal = document.getElementById('rulerHorizontal');
+const rulerVertical = document.getElementById('rulerVertical');
+const toggleRulerBtn = document.getElementById('toggleRulerBtn');
+const clearGuidesBtn = document.getElementById('clearGuidesBtn');
+
+const viewerContainer = document.getElementById('viewerContainer');
+const viewerContent = document.getElementById('viewerContent');
+const mainRulerCorner = document.getElementById('mainRulerCorner');
+const mainRulerHorizontal = document.getElementById('mainRulerHorizontal');
+const mainRulerVertical = document.getElementById('mainRulerVertical');
+const mainGuideLayer = document.getElementById('mainGuideLayer');
 
 const docsMenuBtn = document.getElementById('docsMenuBtn');
 const aboutMenuBtn = document.getElementById('aboutMenuBtn');
@@ -399,6 +414,7 @@ let currentPdfUrl = null;
 let basePdfBytes = null;
 let currentPdfBytes = null; 
 let currentEditPage = 1;
+let editViewportScale = 1.5; // must match the scale used by page.getViewport() in openWorkspace, so ruler ticks line up with the rendered page
 let pdfLayers = {}; 
 let undoStack = [];
 let redoStack = [];
@@ -483,18 +499,14 @@ async function updatePreview(bytes) {
     currentPdfUrl = URL.createObjectURL(blob);
     viewerMessage.style.display = 'none';
 
-    if (detectIsDesktopPC()) {
-        pdfPreviewLayout.style.display = 'none';
-        pdfNavToolbar.style.display = 'none';
-        pdfJsDoc = null;
-        pdfPreview.style.display = 'block';
-        pdfPreview.src = currentPdfUrl;
-    } else {
-        pdfPreview.style.display = 'none';
-        pdfPreview.src = '';
-        pdfPreviewLayout.style.display = 'flex';
-        await loadPdfPreview(bytes);
-    }
+    // The in-app pdf.js canvas renderer is used for every platform (rather than handing off to
+    // the browser's native PDF viewer on desktop) so the ruler/guides always have real page
+    // geometry, at a known zoom, to line up against.
+    if (pdfCanvasContainer) pdfCanvasContainer.querySelectorAll('.pdf-page-wrapper .guide-line').forEach(g => g.remove());
+    pdfPreview.style.display = 'none';
+    pdfPreview.src = '';
+    pdfPreviewLayout.style.display = 'flex';
+    await loadPdfPreview(bytes);
 
     try {
         const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
@@ -604,6 +616,7 @@ async function renderAllPdfPages() {
         const wrapper = document.createElement('div');
         wrapper.className = 'pdf-page-wrapper';
         wrapper.dataset.pageNumber = i;
+        wrapper.dataset.scale = finalScale; // CSS px per PDF point, used by the main ruler
         wrapper.appendChild(canvas);
         zoomLayer.appendChild(wrapper);
 
@@ -622,6 +635,7 @@ async function renderAllPdfPages() {
     pdfZoomLevel.textContent = Math.round(previewZoom * 100) + '%';
 
     setupPageVisibilityTracking(zoomLayer);
+    requestAnimationFrame(() => { resizeMainRulerCanvases(); drawMainRulers(); });
 }
 
 function setupPageVisibilityTracking(zoomLayer) {
@@ -636,6 +650,7 @@ function setupPageVisibilityTracking(zoomLayer) {
             visiblePreviewPage = parseInt(bestEntry.target.dataset.pageNumber, 10);
             pdfCurrentPageDisplay.textContent = visiblePreviewPage;
             updateActiveThumb(visiblePreviewPage);
+            drawMainRulers();
         }
     }, { root: pdfCanvasContainer, threshold: [0.25, 0.5, 0.75] });
 
@@ -769,6 +784,48 @@ async function svgToPngDataUrl(file) {
     });
 }
 
+// Classifies an incoming file for the import pipeline. Browsers frequently report an empty
+// or generic `file.type` for TIFF/PSD, so the file extension is used as the source of truth.
+function getFileKind(file) {
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (file.type === 'application/pdf' || ext === 'pdf') return 'pdf';
+    if (file.type === 'image/svg+xml' || ext === 'svg') return 'svg';
+    if (ext === 'tif' || ext === 'tiff' || file.type === 'image/tiff') return 'tiff';
+    if (ext === 'psd' || file.type === 'image/vnd.adobe.photoshop') return 'psd';
+    if (file.type === 'image/png' || ext === 'png') return 'png';
+    return 'jpeg';
+}
+
+// Decodes a TIFF file (via UTIF.js) onto a canvas and returns a PNG data URL, since neither
+// <img> tags nor pdf-lib can consume raw TIFF bytes directly.
+async function tiffToPngDataUrl(file) {
+    const buffer = await file.arrayBuffer();
+    const ifds = UTIF.decode(buffer);
+    UTIF.decodeImage(buffer, ifds[0]);
+    const rgba = UTIF.toRGBA8(ifds[0]);
+    const canvas = document.createElement('canvas');
+    canvas.width = ifds[0].width; canvas.height = ifds[0].height;
+    canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba), ifds[0].width, ifds[0].height), 0, 0);
+    return canvas.toDataURL('image/png');
+}
+
+// Decodes a PSD file (via ag-psd) and returns the flattened composite image as a PNG data URL.
+// Layer structure is not preserved — only the merged, visible-to-the-eye result is imported.
+async function psdToPngDataUrl(file) {
+    const buffer = await file.arrayBuffer();
+    const psd = agPsd.readPsd(buffer, { skipLayerImageData: true, skipThumbnail: true });
+    return psd.canvas.toDataURL('image/png');
+}
+
+// Normalizes any supported raster/vector file into a PNG data URL ready for pdf-lib's embedPng,
+// or returns null for PDFs (which are handled separately) or already-JPEG-embeddable files.
+async function rasterFileToPngDataUrlIfNeeded(file, kind) {
+    if (kind === 'svg') return svgToPngDataUrl(file);
+    if (kind === 'tiff') return tiffToPngDataUrl(file);
+    if (kind === 'psd') return psdToPngDataUrl(file);
+    return null; // png/jpeg are embedded directly from their raw bytes
+}
+
 function saveWorkspaceState() {
     const items = [];
     document.querySelectorAll('.draggable-item').forEach(item => {
@@ -852,6 +909,71 @@ applySizeBtn.addEventListener('click', async () => {
     }
 });
 
+// Crops every page in the document down to a single rectangle, defined by 4 ruler guides
+// (2 horizontal marking top/bottom, 2 vertical marking left/right) placed against page 1 in
+// the main preview. The rectangle is measured in real PDF points using page 1's own geometry,
+// then applied identically to every page.
+cropToGuidesBtn.addEventListener('click', async () => {
+    if (!currentPdfBytes) return alert('[ ERROR ] No document is open.');
+
+    const pageEl = pdfCanvasContainer.querySelector('.pdf-page-wrapper[data-page-number="1"]');
+    if (!pageEl) return alert('[ ERROR ] Could not locate page 1 in the preview to measure guides against.');
+
+    const allGuides = Array.from(pageEl.querySelectorAll(':scope > .guide-line'));
+    const horizontals = allGuides.filter(g => g.classList.contains('guide-h'));
+    const verticals = allGuides.filter(g => g.classList.contains('guide-v'));
+
+    if (allGuides.length === 0) {
+        return alert('[ ERROR ] No ruler guides found on page 1. Drag 4 guides out from the main-page ruler — one each for the top, bottom, left, and right edges of the crop area — then try again.');
+    }
+    if (horizontals.length !== 2 || verticals.length !== 2) {
+        return alert(`[ ERROR ] Crop to Guides needs exactly 4 guides on page 1: 2 horizontal (top + bottom) and 2 vertical (left + right). Found ${horizontals.length} horizontal and ${verticals.length} vertical instead.`);
+    }
+
+    statusDisplay.innerText = '[ CROPPING TO GUIDES... ]';
+    try {
+        const scale = parseFloat(pageEl.dataset.scale) || 1;
+
+        const sourceDoc = await PDFDocument.load(currentPdfBytes, { ignoreEncryption: true });
+        const page1Size = sourceDoc.getPages()[0].getSize();
+
+        // Guides are positioned directly against page 1's own box, so their style.top/left are
+        // already "px from page 1's top/left edge" — just convert px to points.
+        const hPtsFromTop = horizontals.map(g => parseFloat(g.style.top) / scale).sort((a, b) => a - b);
+        const vPtsFromLeft = verticals.map(g => parseFloat(g.style.left) / scale).sort((a, b) => a - b);
+
+        const cropX = vPtsFromLeft[0];
+        const cropRight = vPtsFromLeft[1];
+        const cropTopY = page1Size.height - hPtsFromTop[0];    // guide nearer the visual top = upper bound
+        const cropBottomY = page1Size.height - hPtsFromTop[1]; // guide nearer the visual bottom = lower bound
+        const cropW = cropRight - cropX;
+        const cropH = cropTopY - cropBottomY;
+
+        const margin = 2; // points of slack for guides parked right at the page edge
+        if (cropW <= 1 || cropH <= 1 || cropX < -margin || cropRight > page1Size.width + margin ||
+            cropBottomY < -margin || cropTopY > page1Size.height + margin) {
+            statusDisplay.innerText = '[ ERROR: CROP FAILED ]';
+            return alert("[ ERROR ] The guides don't form a valid crop area on page 1. Make sure all 4 guides sit within the page and don't overlap each other, then try again.");
+        }
+
+        const newDoc = await PDFDocument.create();
+        const embeddedPages = await newDoc.embedPages(sourceDoc.getPages());
+        embeddedPages.forEach((embPage) => {
+            const newPage = newDoc.addPage([cropW, cropH]);
+            newPage.drawPage(embPage, { x: -cropX, y: -cropBottomY, width: embPage.width, height: embPage.height });
+        });
+
+        currentPdfBytes = await newDoc.save();
+        basePdfBytes = currentPdfBytes;
+        await updatePreview(currentPdfBytes);
+        statusDisplay.innerText = '[ CROP COMPLETE ]';
+    } catch (e) {
+        console.error(e);
+        statusDisplay.innerText = '[ ERROR: CROP FAILED ]';
+        alert('[ ERROR ] Crop to Guides failed: ' + (e.message || e));
+    }
+});
+
 openPdfBtn.addEventListener('click', () => openPdfInput.click());
 openPdfInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
@@ -888,7 +1010,8 @@ fileInput.addEventListener('change', async (e) => {
             const file = files[i];
             const arrayBuffer = await file.arrayBuffer();
             
-            if (file.type === 'application/pdf') {
+            const kind = getFileKind(file);
+            if (kind === 'pdf') {
                 const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
                 if (i === 0) {
                     targetPdf = srcDoc;
@@ -896,13 +1019,14 @@ fileInput.addEventListener('change', async (e) => {
                     (await targetPdf.copyPages(srcDoc, srcDoc.getPageIndices())).forEach(p => targetPdf.addPage(p));
                 }
             } else {
-                if (file.type === 'image/jpeg' && jpegHasCmykComponents(new Uint8Array(arrayBuffer))) isDocCMYK = true;
+                if (kind === 'jpeg' && jpegHasCmykComponents(new Uint8Array(arrayBuffer))) isDocCMYK = true;
                 hasRasterImages = true; 
                 if (!targetPdf) targetPdf = await PDFDocument.create(); 
                 
                 let imgData;
-                if (file.type === 'image/svg+xml') imgData = await targetPdf.embedPng(await svgToPngDataUrl(file));
-                else if (file.type === 'image/png') imgData = await targetPdf.embedPng(arrayBuffer);
+                const convertedDataUrl = await rasterFileToPngDataUrlIfNeeded(file, kind);
+                if (convertedDataUrl) imgData = await targetPdf.embedPng(convertedDataUrl);
+                else if (kind === 'png') imgData = await targetPdf.embedPng(arrayBuffer);
                 else imgData = await targetPdf.embedJpg(arrayBuffer);
                 
                 const imgDims = imgData.scale(1);
@@ -987,7 +1111,8 @@ orgAddInput.addEventListener('change', async (e) => {
         const lastPage = newDoc.getPage(pageCount - 1);
         const { width: refW, height: refH } = lastPage.getSize();
 
-        if (file.type === 'application/pdf') {
+        const orgKind = getFileKind(file);
+        if (orgKind === 'pdf') {
             const addedDoc = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
             const embeddedPages = await newDoc.embedPages(addedDoc.getPages());
             
@@ -1002,10 +1127,11 @@ orgAddInput.addEventListener('change', async (e) => {
             });
         } else {
             let img;
-            if (file.type === 'image/svg+xml') img = await newDoc.embedPng(await svgToPngDataUrl(file));
+            const orgConvertedDataUrl = await rasterFileToPngDataUrlIfNeeded(file, orgKind);
+            if (orgConvertedDataUrl) img = await newDoc.embedPng(orgConvertedDataUrl);
             else {
                 const imgBytes = await file.arrayBuffer();
-                img = file.type === 'image/png' ? await newDoc.embedPng(imgBytes) : await newDoc.embedJpg(imgBytes);
+                img = orgKind === 'png' ? await newDoc.embedPng(imgBytes) : await newDoc.embedJpg(imgBytes);
             }
             
             const newPage = newDoc.addPage([refW, refH]);
@@ -1150,13 +1276,15 @@ async function openWorkspace(pageNum) {
     currentEditPage = parseInt(pageNum);
     
     document.querySelectorAll('.draggable-item').forEach(el => el.remove());
+    document.querySelectorAll('.guide-line').forEach(el => el.remove());
     editModal.style.display = 'flex';
     statusDisplay.innerText = "[ INITIALIZING WORKSPACE... ]";
 
     try {
         const pdf = await pdfjsLib.getDocument({ data: basePdfBytes.slice(0) , maxImageSize: MAX_PDFJS_IMAGE_PIXELS }).promise;
         const page = await pdf.getPage(currentEditPage);
-        const viewport = page.getViewport({ scale: 1.5 }); 
+        editViewportScale = 1.5;
+        const viewport = page.getViewport({ scale: editViewportScale }); 
 
         editCanvas.width = viewport.width; editCanvas.height = viewport.height;
         await page.render({ canvasContext: editCanvas.getContext('2d'), viewport }).promise;
@@ -1169,6 +1297,7 @@ async function openWorkspace(pageNum) {
 
         undoStack = []; redoStack = []; saveWorkspaceState();
         statusDisplay.innerText = "[ WORKSPACE READY ]";
+        requestAnimationFrame(() => { resizeRulerCanvases(); drawRulers(); });
     } catch (err) { console.error("Workspace error", err); }
 }
 
@@ -1211,6 +1340,241 @@ function makeInteractive(el) {
         document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp);
     });
 }
+
+// --- Rulers & Guides (Acrobat-style) ---
+// Rulers are drawn in real document units (inches, subdivided into eighths). Shared by the
+// Edit workspace ruler (tied to editViewportScale / canvasWrapper) and the main-page ruler
+// (tied to whichever page is currently in view, using the per-page scale stamped on its wrapper).
+
+function drawRulerTicks(canvas, orientation, originPx, pxPerInch) {
+    const ctx = canvas.getContext('2d');
+    const size = orientation === 'h' ? canvas.width : canvas.height;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#1a1a1e'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#00f3ff'; ctx.fillStyle = '#00f3ff'; ctx.font = '9px "Share Tech Mono", monospace';
+    ctx.lineWidth = 1;
+    if (!pxPerInch || pxPerInch <= 0) return;
+
+    for (let inch = 0; originPx + inch * pxPerInch <= size; inch++) {
+        const pos = originPx + inch * pxPerInch;
+        if (pos < -pxPerInch) continue;
+        if (pos >= 0) {
+            if (orientation === 'h') {
+                ctx.beginPath(); ctx.moveTo(Math.round(pos) + 0.5, 4); ctx.lineTo(Math.round(pos) + 0.5, 20); ctx.stroke();
+                if (inch > 0) ctx.fillText(String(inch), pos + 2, 12);
+            } else {
+                ctx.beginPath(); ctx.moveTo(4, Math.round(pos) + 0.5); ctx.lineTo(20, Math.round(pos) + 0.5); ctx.stroke();
+                if (inch > 0) {
+                    ctx.save(); ctx.textAlign = 'center';
+                    ctx.fillText(String(inch), 11, pos + 9);
+                    ctx.restore();
+                }
+            }
+        }
+        for (let m = 1; m < 8; m++) {
+            const mpos = pos + (m / 8) * pxPerInch;
+            if (mpos < 0 || mpos > size) continue;
+            const near = (m === 4) ? 10 : 15;
+            if (orientation === 'h') { ctx.beginPath(); ctx.moveTo(Math.round(mpos) + 0.5, near); ctx.lineTo(Math.round(mpos) + 0.5, 20); ctx.stroke(); }
+            else { ctx.beginPath(); ctx.moveTo(near, Math.round(mpos) + 0.5); ctx.lineTo(20, Math.round(mpos) + 0.5); ctx.stroke(); }
+        }
+    }
+}
+
+// -- Edit workspace ruler --
+function resizeRulerCanvases() {
+    if (!workspaceContainer) return;
+    rulerHorizontal.width = Math.max(1, workspaceContainer.clientWidth - 20);
+    rulerHorizontal.height = 20;
+    rulerVertical.width = 20;
+    rulerVertical.height = Math.max(1, workspaceContainer.clientHeight - 20);
+}
+
+function drawRulers() {
+    if (editModal.style.display === 'none' || !canvasWrapper.offsetParent) return;
+    const wrapRect = canvasWrapper.getBoundingClientRect();
+    const hRect = rulerHorizontal.getBoundingClientRect();
+    const vRect = rulerVertical.getBoundingClientRect();
+    const pxPerInch = 72 * editViewportScale;
+    drawRulerTicks(rulerHorizontal, 'h', wrapRect.left - hRect.left, pxPerInch);
+    drawRulerTicks(rulerVertical, 'v', wrapRect.top - vRect.top, pxPerInch);
+}
+
+// -- Main-page ruler --
+// Its zero point tracks whichever page is currently visible in the continuous-scroll preview,
+// so ticks stay accurate as you scroll or change zoom.
+function getMainRulerOriginEl() {
+    if (!pdfCanvasContainer) return null;
+    return pdfCanvasContainer.querySelector(`.pdf-page-wrapper[data-page-number="${visiblePreviewPage || 1}"]`)
+        || pdfCanvasContainer.querySelector('.pdf-page-wrapper');
+}
+
+function resizeMainRulerCanvases() {
+    if (!viewerContainer || !mainRulerHorizontal || !mainRulerVertical) return;
+    mainRulerHorizontal.width = Math.max(1, viewerContainer.clientWidth - 20);
+    mainRulerHorizontal.height = 20;
+    mainRulerVertical.width = 20;
+    mainRulerVertical.height = Math.max(1, viewerContainer.clientHeight - 20);
+}
+
+function drawMainRulers() {
+    if (!mainRulerHorizontal || !mainRulerVertical || !mainRulerHorizontal.offsetParent) return;
+    const pageEl = getMainRulerOriginEl();
+    if (!pageEl || pdfPreviewLayout.style.display === 'none') {
+        drawRulerTicks(mainRulerHorizontal, 'h', 0, 0);
+        drawRulerTicks(mainRulerVertical, 'v', 0, 0);
+        return;
+    }
+    const scale = parseFloat(pageEl.dataset.scale) || 1;
+    const pageRect = pageEl.getBoundingClientRect();
+    const hRect = mainRulerHorizontal.getBoundingClientRect();
+    const vRect = mainRulerVertical.getBoundingClientRect();
+    const pxPerInch = 72 * scale;
+    drawRulerTicks(mainRulerHorizontal, 'h', pageRect.left - hRect.left, pxPerInch);
+    drawRulerTicks(mainRulerVertical, 'v', pageRect.top - vRect.top, pxPerInch);
+}
+
+// -- Shared guide-line drag/create logic --
+// `layerEl` is where guides live and where drag positions are measured from.
+// `getOriginEl()` returns the element whose top-left corresponds to the document's real
+// (0,0) point and whose `dataset.scale` (CSS px per PDF point) drives the inch readout —
+// for the Edit workspace this is canvasWrapper itself; for the main page it's the
+// currently-visible page wrapper.
+function computeGuideMetrics(layerEl, originEl, fallbackScale) {
+    const layerRect = layerEl.getBoundingClientRect();
+    const originRect = originEl ? originEl.getBoundingClientRect() : layerRect;
+    const scale = (originEl && parseFloat(originEl.dataset.scale)) || fallbackScale || 1;
+    return {
+        layerRect,
+        offsetX: originRect.left - layerRect.left,
+        offsetY: originRect.top - layerRect.top,
+        pxPerInch: 72 * scale
+    };
+}
+
+let guideTooltipEl = null;
+function showGuideTooltip(clientX, clientY, pxFromOrigin, pxPerInch) {
+    if (!guideTooltipEl) {
+        guideTooltipEl = document.createElement('div');
+        guideTooltipEl.className = 'guide-tooltip';
+        document.body.appendChild(guideTooltipEl);
+    }
+    guideTooltipEl.textContent = (pxFromOrigin / (pxPerInch || 108)).toFixed(2) + ' in';
+    guideTooltipEl.style.left = (clientX + 12) + 'px';
+    guideTooltipEl.style.top = (clientY + 12) + 'px';
+}
+function hideGuideTooltip() { if (guideTooltipEl) { guideTooltipEl.remove(); guideTooltipEl = null; } }
+
+function isPointWithinRect(rect, clientX, clientY) {
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+}
+
+function attachGuideDrag(el, type, layerEl, getOriginEl, fallbackScale) {
+    el.addEventListener('mousedown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        el.classList.add('dragging');
+
+        function onMove(moveEvent) {
+            const metrics = computeGuideMetrics(layerEl, getOriginEl(), fallbackScale);
+            if (type === 'h') {
+                const y = Math.min(Math.max(moveEvent.clientY - metrics.layerRect.top, 0), metrics.layerRect.height);
+                el.style.top = y + 'px';
+                showGuideTooltip(moveEvent.clientX, moveEvent.clientY, y - metrics.offsetY, metrics.pxPerInch);
+            } else {
+                const x = Math.min(Math.max(moveEvent.clientX - metrics.layerRect.left, 0), metrics.layerRect.width);
+                el.style.left = x + 'px';
+                showGuideTooltip(moveEvent.clientX, moveEvent.clientY, x - metrics.offsetX, metrics.pxPerInch);
+            }
+        }
+        function onUp(upEvent) {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            el.classList.remove('dragging');
+            hideGuideTooltip();
+            if (!isPointWithinRect(layerEl.getBoundingClientRect(), upEvent.clientX, upEvent.clientY)) el.remove();
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    });
+    el.addEventListener('dblclick', (e) => { e.stopPropagation(); el.remove(); });
+}
+
+function createGuideElement(type, posPx, layerEl, getOriginEl, fallbackScale) {
+    const el = document.createElement('div');
+    el.className = 'guide-line ' + (type === 'h' ? 'guide-h' : 'guide-v');
+    if (type === 'h') el.style.top = posPx + 'px'; else el.style.left = posPx + 'px';
+    layerEl.appendChild(el);
+    attachGuideDrag(el, type, layerEl, getOriginEl, fallbackScale);
+    return el;
+}
+
+// Live-drags a guide out from a ruler: a preview line follows the cursor continuously (visible
+// the whole time, not just on drop) and turns into a real, permanent guide on mouse-up.
+function startGuideCreationFromRuler(type, e, layerEl, getOriginEl, fallbackScale) {
+    e.preventDefault();
+    const preview = document.createElement('div');
+    preview.className = 'guide-drag-preview ' + (type === 'h' ? 'guide-h' : 'guide-v');
+    document.body.appendChild(preview);
+
+    function position(moveEvent) {
+        if (type === 'h') preview.style.top = moveEvent.clientY + 'px';
+        else preview.style.left = moveEvent.clientX + 'px';
+        const metrics = computeGuideMetrics(layerEl, getOriginEl(), fallbackScale);
+        const localPos = type === 'h' ? (moveEvent.clientY - metrics.layerRect.top) : (moveEvent.clientX - metrics.layerRect.left);
+        const offset = type === 'h' ? metrics.offsetY : metrics.offsetX;
+        showGuideTooltip(moveEvent.clientX, moveEvent.clientY, localPos - offset, metrics.pxPerInch);
+    }
+    position(e);
+
+    function onMove(moveEvent) { position(moveEvent); }
+    function onUp(upEvent) {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        preview.remove();
+        hideGuideTooltip();
+        const layerRect = layerEl.getBoundingClientRect();
+        if (isPointWithinRect(layerRect, upEvent.clientX, upEvent.clientY)) {
+            if (type === 'h') createGuideElement('h', upEvent.clientY - layerRect.top, layerEl, getOriginEl, fallbackScale);
+            else createGuideElement('v', upEvent.clientX - layerRect.left, layerEl, getOriginEl, fallbackScale);
+        }
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+}
+
+// Wiring: Edit workspace ruler (guides live inside canvasWrapper, which is also the origin)
+if (rulerHorizontal) rulerHorizontal.addEventListener('mousedown', (e) => startGuideCreationFromRuler('h', e, canvasWrapper, () => canvasWrapper, editViewportScale));
+if (rulerVertical) rulerVertical.addEventListener('mousedown', (e) => startGuideCreationFromRuler('v', e, canvasWrapper, () => canvasWrapper, editViewportScale));
+
+if (toggleRulerBtn) toggleRulerBtn.addEventListener('click', () => {
+    workspaceContainer.classList.toggle('rulers-hidden');
+});
+if (clearGuidesBtn) clearGuidesBtn.addEventListener('click', () => {
+    canvasWrapper.querySelectorAll('.guide-line').forEach(g => g.remove());
+});
+
+window.addEventListener('resize', () => { resizeRulerCanvases(); drawRulers(); });
+if (workspaceContainer) workspaceContainer.addEventListener('scroll', drawRulers);
+
+// Wiring: main-page ruler. Guides are appended directly onto whichever page wrapper is
+// currently in view (so they're part of that page's own box and scroll along with it,
+// instead of floating at a fixed screen position while the document scrolls underneath).
+if (mainRulerHorizontal) mainRulerHorizontal.addEventListener('mousedown', (e) => {
+    const pageEl = getMainRulerOriginEl();
+    if (!pageEl) return;
+    startGuideCreationFromRuler('h', e, pageEl, () => pageEl, parseFloat(pageEl.dataset.scale) || 1);
+});
+if (mainRulerVertical) mainRulerVertical.addEventListener('mousedown', (e) => {
+    const pageEl = getMainRulerOriginEl();
+    if (!pageEl) return;
+    startGuideCreationFromRuler('v', e, pageEl, () => pageEl, parseFloat(pageEl.dataset.scale) || 1);
+});
+if (mainRulerCorner) mainRulerCorner.addEventListener('click', () => {
+    pdfCanvasContainer.querySelectorAll('.pdf-page-wrapper .guide-line').forEach(g => g.remove());
+});
+
+window.addEventListener('resize', () => { resizeMainRulerCanvases(); drawMainRulers(); });
+if (pdfCanvasContainer) pdfCanvasContainer.addEventListener('scroll', drawMainRulers);
 
 document.addEventListener('mousedown', (e) => {
     if (!e.target.closest('.draggable-item') && !e.target.closest('.workspace-toolbar') && !e.target.closest('.tool-btn')) {
@@ -1274,17 +1638,25 @@ attachInput.addEventListener('change', (e) => {
     const pageNum = prompt("Input Target Page Number:", "1");
     if (!pageNum) return;
 
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-        let srcData = ev.target.result;
-        if (file.type === 'image/svg+xml') srcData = await svgToPngDataUrl(file);
+    const attachKind = getFileKind(file);
+    (async () => {
+        let srcData;
+        const attachConvertedDataUrl = await rasterFileToPngDataUrlIfNeeded(file, attachKind);
+        if (attachConvertedDataUrl) {
+            srcData = attachConvertedDataUrl;
+        } else {
+            srcData = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (ev) => resolve(ev.target.result);
+                reader.readAsDataURL(file);
+            });
+        }
 
         await openWorkspace(pageNum);
         const item = createWorkspaceElementDOM({ type: 'image', left: '50px', top: '50px', width: '160px', height: '160px', src: srcData });
         canvasWrapper.appendChild(item); makeInteractive(item); saveWorkspaceState();
         attachInput.value = ''; 
-    };
-    reader.readAsDataURL(file);
+    })();
 });
 
 applyEditsBtn.addEventListener('click', async () => {

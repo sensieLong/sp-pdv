@@ -11,6 +11,12 @@
     <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+    <!-- TIFF decoding (pako is required by UTIF for compressed TIFFs) -->
+    <script src="https://cdn.jsdelivr.net/npm/pako@1.0.11/dist/pako.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+    <!-- PSD decoding -->
+    <script src="https://cdn.jsdelivr.net/npm/ag-psd@31.0.2/dist/bundle.js"></script>
 </head>
 <body>
 
@@ -42,6 +48,7 @@
                 <span style="color:#888; font-size:11px; margin-right: 5px;">DPI</span>
                 
                 <button id="applySizeBtn" class="tool-btn-small" style="padding: 2px 6px; font-size:12px; width:auto; border-color:var(--neon-yellow); color:var(--neon-yellow);">RESIZE</button>
+                <button id="cropToGuidesBtn" class="tool-btn-small" title="Crop page 1 to its 4 ruler guides (top/bottom/left/right) — all other pages follow the same crop" style="padding: 2px 6px; font-size:12px; width:auto; border-color:var(--neon-pink); color:var(--neon-pink);">✂ CROP TO GUIDES</button>
             </div>
             <div class="menu-item active">Home</div>
             <div class="menu-item" id="docsMenuBtn">Documentation</div>
@@ -58,21 +65,27 @@
 
     <div class="main-container">
         <div class="viewer" id="viewerContainer">
-            <div class="viewer-message" id="viewerMessage">
-                <h2>[ SYSTEM READY ]</h2>
-                <p>Awaiting input. Click <strong class="neon-text">"Open PDF"</strong> or <strong class="neon-text">"Combine Files"</strong> to initialize workspace.</p>
-            </div>
-            <div class="pdf-preview-layout" id="pdfPreviewLayout">
-                <div id="pdfThumbRail" class="pdf-thumb-rail"></div>
-                <div id="pdfCanvasContainer" class="pdf-canvas-container"></div>
-            </div>
-            <iframe id="pdfPreview" title="PDF Preview"></iframe>
-            <div class="pdf-nav-toolbar" id="pdfNavToolbar">
-                <span class="pdf-page-indicator">PAGE <span id="pdfCurrentPageDisplay">1</span> / <span id="pdfPageCount">1</span></span>
-                <span class="toolbar-divider"></span>
-                <button class="pdf-nav-btn" id="pdfZoomOutBtn" title="Zoom Out">−</button>
-                <span class="pdf-zoom-indicator" id="pdfZoomLevel">100%</span>
-                <button class="pdf-nav-btn" id="pdfZoomInBtn" title="Zoom In">+</button>
+            <div class="ruler-corner" id="mainRulerCorner" title="Click to clear all guides"></div>
+            <canvas class="ruler ruler-horizontal" id="mainRulerHorizontal"></canvas>
+            <canvas class="ruler ruler-vertical" id="mainRulerVertical"></canvas>
+            <div class="viewer-content" id="viewerContent">
+                <div class="viewer-message" id="viewerMessage">
+                    <h2>[ SYSTEM READY ]</h2>
+                    <p>Awaiting input. Click <strong class="neon-text">"Open PDF"</strong> or <strong class="neon-text">"Combine Files"</strong> to initialize workspace.</p>
+                </div>
+                <div class="pdf-preview-layout" id="pdfPreviewLayout">
+                    <div id="pdfThumbRail" class="pdf-thumb-rail"></div>
+                    <div id="pdfCanvasContainer" class="pdf-canvas-container"></div>
+                </div>
+                <iframe id="pdfPreview" title="PDF Preview"></iframe>
+                <div class="pdf-nav-toolbar" id="pdfNavToolbar">
+                    <span class="pdf-page-indicator">PAGE <span id="pdfCurrentPageDisplay">1</span> / <span id="pdfPageCount">1</span></span>
+                    <span class="toolbar-divider"></span>
+                    <button class="pdf-nav-btn" id="pdfZoomOutBtn" title="Zoom Out">−</button>
+                    <span class="pdf-zoom-indicator" id="pdfZoomLevel">100%</span>
+                    <button class="pdf-nav-btn" id="pdfZoomInBtn" title="Zoom In">+</button>
+                </div>
+                <div id="mainGuideLayer" class="guide-layer"></div>
             </div>
         </div>
 
@@ -88,7 +101,7 @@
                 <button class="tool-btn" id="combineBtn">
                     <span class="tool-icon">📁</span> <span class="tool-text">Combine Files</span>
                 </button>
-                <input type="file" id="fileInput" accept="image/png, image/jpeg, image/svg+xml, application/pdf" multiple>
+                <input type="file" id="fileInput" accept="image/png, image/jpeg, image/svg+xml, application/pdf, image/tiff, .tif, .tiff, .psd" multiple>
                 
                 <button class="tool-btn" id="organizeBtn">
                     <span class="tool-icon">📑</span> <span class="tool-text">Organize Pages</span>
@@ -105,7 +118,7 @@
                 <button class="tool-btn" id="attachBtn">
                     <span class="tool-icon">📎</span> <span class="tool-text">Attach File to Page</span> 
                 </button>
-                <input type="file" id="attachInput" accept="image/png, image/jpeg, image/svg+xml">
+                <input type="file" id="attachInput" accept="image/png, image/jpeg, image/svg+xml, image/tiff, .tif, .tiff, .psd">
                 
                 <button class="tool-btn action-ready" id="exportBtn">
                     <span class="tool-icon">📤</span> <span class="tool-text">Export PDF</span>
@@ -134,7 +147,7 @@
                 <h3>[ ORGANIZE_PAGES ]</h3>
                 <div class="workspace-toolbar">
                     <button class="tool-btn-small" id="orgAddBtn" style="color: var(--neon-cyan); border-color: var(--neon-cyan);">➕ Insert File</button>
-                    <input type="file" id="orgAddInput" accept="image/png, image/jpeg, image/svg+xml, application/pdf" style="display: none;">
+                    <input type="file" id="orgAddInput" accept="image/png, image/jpeg, image/svg+xml, application/pdf, image/tiff, .tif, .tiff, .psd" style="display: none;">
                     
                     <button class="tool-btn-small" id="orgAddBlankBtn" style="color: var(--neon-pink); border-color: var(--neon-pink);">📄 Insert Blank Page</button>
 
@@ -159,11 +172,17 @@
                     <button class="tool-btn-small" id="redoBtn" title="Redo">↪️</button>
                     <button class="tool-btn-small" id="globalTrashBtn" title="Delete Selected Element">🗑️</button>
                     <span class="toolbar-divider"></span>
+                    <button class="tool-btn-small" id="toggleRulerBtn" title="Toggle Rulers & Guides">📏</button>
+                    <button class="tool-btn-small" id="clearGuidesBtn" title="Clear All Guides">🧹</button>
+                    <span class="toolbar-divider"></span>
                     <button class="tool-btn action-ready" id="applyEditsBtn" style="display:inline-block; width:auto; padding: 8px 16px;">💾 Apply Changes</button>
                     <button id="closeEditModalBtn" class="close-btn">&times;</button>
                 </div>
             </div>
             <div id="workspaceContainer" class="workspace-container">
+                <div id="rulerCorner" class="ruler-corner"></div>
+                <canvas id="rulerHorizontal" class="ruler ruler-horizontal"></canvas>
+                <canvas id="rulerVertical" class="ruler ruler-vertical"></canvas>
                 <div id="canvasWrapper" class="canvas-wrapper">
                     <canvas id="editCanvas"></canvas>
                 </div>
@@ -281,7 +300,7 @@
                     <h4>1. File Ingestion Matrix</h4>
                     <ul>
                         <li><strong>Open PDF:</strong> Pulls a single localized PDF document into the core render pipeline.</li>
-                        <li><strong>Combine Files:</strong> Aggregates multiple asset nodes and bundles them into a master document stream.</li>
+                        <li><strong>Combine Files:</strong> Aggregates multiple asset nodes and bundles them into a master document stream. Accepts PDF, PNG, JPEG, SVG, TIFF, and PSD (Photoshop) source files — raster formats are flattened onto their own page at 300 DPI, and layered PSD files are merged down to their composite image before import.</li>
                     </ul>
                 </div>
                 <div class="doc-section">
@@ -296,6 +315,8 @@
                     <ul>
                         <li><strong>Edit PDF (Add Text):</strong> Assigns standard typographic objects onto selected canvas zones. Highlight item grids to reposition layout, alter scale bounds via corner anchors, or alter structural string metrics inline.</li>
                         <li><strong>Attach File to Page:</strong> Embeds image files directly over target canvas coordinates using localized scale structures.</li>
+                        <li><strong>Rulers & Guides:</strong> The Edit workspace displays Acrobat-style rulers (marked in points/inches) along the top and left edge. Click-drag out from the top ruler to lay down a horizontal guide line, or from the left ruler for a vertical one — the guide follows your cursor and locks in place on mouse-up. Drag an existing guide to reposition it, drag it back onto its ruler to delete it, or double-click it to remove it instantly. Use the 📏 toolbar button to hide/show rulers and guides, or 🧹 to clear every guide on the page. The same ruler is also present on the main preview page for marking up crop areas.</li>
+                        <li><strong>Crop to Guides:</strong> Drag out exactly 4 guides on page 1 of the main preview — one each marking the top, bottom, left, and right edges of the desired crop area — then click <em>✂ Crop to Guides</em> next to the Resize control. Every page in the document is cropped to that same rectangle. If fewer or more than 4 guides are present, or they don't form a valid area on the page, an error is shown instead.</li>
                         <li>Ensure you commit your modifications by executing the <em>Apply Changes</em> routine to overlay alterations securely.</li>
                     </ul>
                 </div>

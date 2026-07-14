@@ -37,6 +37,7 @@ const pdfZoomLevel = document.getElementById('pdfZoomLevel');
 
 const applySizeBtn = document.getElementById('applySizeBtn');
 const cropToGuidesBtn = document.getElementById('cropToGuidesBtn');
+const bleedInp = document.getElementById('bleedInp');
 const docWidthInp = document.getElementById('docWidthInp');
 const docHeightInp = document.getElementById('docHeightInp');
 const docResInp = document.getElementById('docResInp');
@@ -956,11 +957,20 @@ cropToGuidesBtn.addEventListener('click', async () => {
             return alert("[ ERROR ] The guides don't form a valid crop area on page 1. Make sure all 4 guides sit within the page and don't overlap each other, then try again.");
         }
 
+        // Bleed (entered in inches) expands the guide-defined box outward, split evenly across
+        // both edges of each dimension, so e.g. a 2x2 in box with a 0.125 in bleed becomes 2.125x2.125 in.
+        const bleedIn = parseFloat(bleedInp.value);
+        const bleedPts = (isNaN(bleedIn) || bleedIn < 0 ? 0 : bleedIn) * 72;
+        const finalCropX = cropX - bleedPts / 2;
+        const finalCropBottomY = cropBottomY - bleedPts / 2;
+        const finalCropW = cropW + bleedPts;
+        const finalCropH = cropH + bleedPts;
+
         const newDoc = await PDFDocument.create();
         const embeddedPages = await newDoc.embedPages(sourceDoc.getPages());
         embeddedPages.forEach((embPage) => {
-            const newPage = newDoc.addPage([cropW, cropH]);
-            newPage.drawPage(embPage, { x: -cropX, y: -cropBottomY, width: embPage.width, height: embPage.height });
+            const newPage = newDoc.addPage([finalCropW, finalCropH]);
+            newPage.drawPage(embPage, { x: -finalCropX, y: -finalCropBottomY, width: embPage.width, height: embPage.height });
         });
 
         currentPdfBytes = await newDoc.save();

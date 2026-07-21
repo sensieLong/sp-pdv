@@ -984,24 +984,73 @@ cropToGuidesBtn.addEventListener('click', async () => {
     }
 });
 
-openPdfBtn.addEventListener('click', () => openPdfInput.click());
-openPdfInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+// --- File System Access API integration ---
+// In Chromium-based browsers this lets Open and Export/Download share the browser's native
+// file picker, which remembers the last folder used per site — so once a PDF is opened from a
+// folder, subsequent exports default to that same folder instead of always landing in Downloads.
+// Firefox/Safari don't support it, so everything falls back to the classic anchor-click download.
+const supportsFileSystemAccess = typeof window.showSaveFilePicker === 'function';
+const PDF_PICKER_TYPES = [{ description: 'PDF Document', accept: { 'application/pdf': ['.pdf'] } }];
+
+async function saveBytesToFile(bytes, suggestedName) {
+    if (supportsFileSystemAccess) {
+        try {
+            const handle = await window.showSaveFilePicker({ suggestedName, types: PDF_PICKER_TYPES });
+            const writable = await handle.createWritable();
+            await writable.write(bytes);
+            await writable.close();
+            return true;
+        } catch (err) {
+            if (err && err.name === 'AbortError') return false; // user cancelled the dialog — not a failure
+            console.warn('[ File System Access ] save failed, falling back to browser download:', err);
+        }
+    }
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+    const link = document.createElement('a');
+    link.href = url; link.download = suggestedName;
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 100);
+    return true;
+}
+
+// Loads a chosen PDF File object into the app (shared by both the File System Access picker
+// and the classic <input type="file"> fallback path below).
+async function loadOpenedPdfFile(file) {
     try {
-        pdfLayers = {}; 
+        pdfLayers = {};
         const buffer = await file.arrayBuffer();
-        
         const loadedDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
         isDocCMYK = false; // no auto-detection anymore; the CMYK export option is just always offered
         importedBaseFileName = getBaseFileName(file.name);
-        
-        basePdfBytes = await loadedDoc.save(); 
+
+        basePdfBytes = await loadedDoc.save();
         updatePreview(basePdfBytes);
         updateCmykButtonVisibility();
-        
+
         statusDisplay.innerText = '[ SYSTEM: PDF LOADED ]';
     } catch (error) { console.error('[ Open PDF ] load failed:', error); statusDisplay.innerText = '[ ERROR: LOAD FAILED ]'; }
+}
+
+openPdfBtn.addEventListener('click', async () => {
+    if (supportsFileSystemAccess && typeof window.showOpenFilePicker === 'function') {
+        try {
+            const [handle] = await window.showOpenFilePicker({ types: PDF_PICKER_TYPES, multiple: false });
+            await loadOpenedPdfFile(await handle.getFile());
+        } catch (err) {
+            if (err && err.name !== 'AbortError') {
+                console.warn('[ File System Access ] open failed, falling back to classic file input:', err);
+                openPdfInput.click();
+            }
+        }
+        return;
+    }
+    openPdfInput.click();
+});
+openPdfInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    await loadOpenedPdfFile(file);
+    openPdfInput.value = '';
 });
 
 combineBtn.addEventListener('click', () => fileInput.click());
@@ -1738,38 +1787,54 @@ splitBtn.addEventListener('click', async () => {
         const totalPages = sourcePdfDoc.getPageCount();
         let partCounter = 1;
 
+        // Pick a single destination folder up front (Chromium browsers) so all split parts
+        // land together in one place, next to the original file, instead of N separate
+        // "Save As" dialogs or a pile of files in Downloads.
+        let destDirHandle = null;
+        if (typeof window.showDirectoryPicker === 'function') {
+            try { destDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' }); }
+            catch (err) { if (err && err.name !== 'AbortError') console.warn('[ File System Access ] folder pick failed, falling back to downloads:', err); }
+        }
+
         for (let i = 0; i < totalPages; i += chunkSize) {
             const splitPdfDoc = await PDFDocument.create(), pageIndices = [];
             for (let j = i; j < Math.min(i + chunkSize, totalPages); j++) pageIndices.push(j);
             (await splitPdfDoc.copyPages(sourcePdfDoc, pageIndices)).forEach(page => splitPdfDoc.addPage(page));
+            const partBytes = await splitPdfDoc.save();
+            const partName = `Spiokoks_Doc_Part_${partCounter++}.pdf`;
 
-            const splitUrl = URL.createObjectURL(new Blob([await splitPdfDoc.save()], { type: 'application/pdf' }));
-            const link = document.createElement('a');
-            link.href = splitUrl; link.download = `Spiokoks_Doc_Part_${partCounter++}.pdf`;
-            document.body.appendChild(link); link.click(); document.body.removeChild(link);
-            setTimeout(() => URL.revokeObjectURL(splitUrl), 100);
+            if (destDirHandle) {
+                const fileHandle = await destDirHandle.getFileHandle(partName, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(partBytes);
+                await writable.close();
+            } else {
+                const splitUrl = URL.createObjectURL(new Blob([partBytes], { type: 'application/pdf' }));
+                const link = document.createElement('a');
+                link.href = splitUrl; link.download = partName;
+                document.body.appendChild(link); link.click(); document.body.removeChild(link);
+                setTimeout(() => URL.revokeObjectURL(splitUrl), 100);
+            }
         }
         statusDisplay.innerText = `[ SPLIT SUCCESS: ${partCounter - 1} PARTS ]`;
     } catch (error) { console.error('[ Split ] split failed:', error); statusDisplay.innerText = '[ ERROR: SPLIT FAILED ]'; }
 });
 
-exportBtn.addEventListener('click', () => {
-    if (!currentPdfUrl) return alert('[ ERROR ] No document to export.');
-    
+exportBtn.addEventListener('click', async () => {
+    if (!currentPdfBytes) return alert('[ ERROR ] No document to export.');
+
     exportModal.style.display = 'flex';
     statusDisplay.innerText = '[ COMPILING EXPORT FILE... ]';
 
-    setTimeout(() => {
-        const link = document.createElement('a');
-        link.href = currentPdfUrl; 
-        link.download = `${importedBaseFileName}_Combined.pdf`;
-        document.body.appendChild(link); 
-        link.click(); 
-        document.body.removeChild(link);
-        
-        exportModal.style.display = 'none';
+    try {
+        await saveBytesToFile(currentPdfBytes, `${importedBaseFileName}_Combined.pdf`);
         statusDisplay.innerText = '[ EXPORT OPERATIONAL COMPLETE ]';
-    }, 1500);
+    } catch (err) {
+        console.error(err);
+        statusDisplay.innerText = '[ ERROR: EXPORT FAILED ]';
+    } finally {
+        exportModal.style.display = 'none';
+    }
 });
 
 // Rasterizes each page via pdf.js and remaps every pixel through the CMYK
@@ -1838,21 +1903,12 @@ convertCmykExportBtn.addEventListener('click', async () => {
 
     try {
         const cmykBytes = await convertPdfPagesToCmykRaster(currentPdfBytes);
-        const cmykUrl = URL.createObjectURL(new Blob([cmykBytes], { type: 'application/pdf' }));
-
-        const link = document.createElement('a');
-        link.href = cmykUrl;
-        link.download = `${importedBaseFileName}_Combined_CMYK.pdf`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(cmykUrl);
-
-        exportModal.style.display = 'none';
+        await saveBytesToFile(cmykBytes, `${importedBaseFileName}_Combined_CMYK.pdf`);
         statusDisplay.innerText = '[ CMYK EXPORT COMPLETE ]';
     } catch (err) {
         console.error(err);
-        exportModal.style.display = 'none';
         statusDisplay.innerText = '[ ERROR: CMYK CONVERSION FAILED ]';
+    } finally {
+        exportModal.style.display = 'none';
     }
 });

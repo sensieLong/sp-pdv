@@ -4,7 +4,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Access Libraries (CMYK included)
-const { PDFDocument, rgb, cmyk, degrees, PDFName } = PDFLib;
+const { PDFDocument, rgb, cmyk, degrees, PDFName, drawImage } = PDFLib;
 const pdfjsLib = window['pdfjs-dist/build/pdf'];
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
@@ -38,6 +38,11 @@ const pdfZoomLevel = document.getElementById('pdfZoomLevel');
 const applySizeBtn = document.getElementById('applySizeBtn');
 const cropToGuidesBtn = document.getElementById('cropToGuidesBtn');
 const bleedInp = document.getElementById('bleedInp');
+const psdModeModal = document.getElementById('psdModeModal');
+const psdModeModalMessage = document.getElementById('psdModeModalMessage');
+const psdModeConvertBtn = document.getElementById('psdModeConvertBtn');
+const psdModeThumbBtn = document.getElementById('psdModeThumbBtn');
+const psdModeCancelBtn = document.getElementById('psdModeCancelBtn');
 const docWidthInp = document.getElementById('docWidthInp');
 const docHeightInp = document.getElementById('docHeightInp');
 const docResInp = document.getElementById('docResInp');
@@ -812,10 +817,394 @@ async function tiffToPngDataUrl(file) {
 
 // Decodes a PSD file (via ag-psd) and returns the flattened composite image as a PNG data URL.
 // Layer structure is not preserved — only the merged, visible-to-the-eye result is imported.
+// ag-psd (the PSD decoding library) hard-codes an allowlist of "supported" color modes —
+// Bitmap, Grayscale, RGB, Indexed — and refuses to read anything else, even though it actually
+// already implements CMYK->RGB conversion for the flattened composite image internally; CMYK is
+// just excluded from the allowlist. Rather than hosting a modified copy of the library, we fetch
+// the real one at first use and patch that one line before executing it, so CMYK PSDs (very
+// common in print production) load normally. If the library's source ever changes and the patch
+// no longer applies, this fails silently back to the library's original (RGB-only) behavior.
+let agPsdLoadPromise = null;
+function ensurePatchedAgPsd() {
+    if (window.agPsd) return Promise.resolve(window.agPsd);
+    if (agPsdLoadPromise) return agPsdLoadPromise;
+    agPsdLoadPromise = fetch('https://cdn.jsdelivr.net/npm/ag-psd@31.0.2/dist/bundle.js')
+        .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.text(); })
+        .then(src => {
+            const target = 'exports.supportedColorModes = [0 /* ColorMode.Bitmap */, 1 /* ColorMode.Grayscale */, 3 /* ColorMode.RGB */, 2 /* ColorMode.Indexed */];';
+            const patched = src.includes(target)
+                ? src.replace(target, 'exports.supportedColorModes = [0, 1, 3, 2, 4 /* CMYK, patched in at runtime */];')
+                : src;
+            if (patched === src) console.warn('[ PSD ] ag-psd CMYK patch target not found (library may have updated) — CMYK PSDs may fail to decode.');
+            const scriptEl = document.createElement('script');
+            scriptEl.text = patched;
+            document.head.appendChild(scriptEl);
+            if (!window.agPsd) throw new Error('ag-psd failed to initialize');
+            return window.agPsd;
+        });
+    return agPsdLoadPromise;
+}
+
+// Last-resort fallback for PSD color modes ag-psd genuinely can't decode at all (Lab, Duotone,
+// Multichannel — all rare in practice). Rather than failing the import outright, this hand-parses
+// just enough of the PSD's binary layout to pull out its embedded low-res preview thumbnail
+// (image resource 1036 or 1033, a plain embedded JPEG) and uses that instead. Lower quality than
+// a full decode, but keeps the import from failing entirely. Returns null if no thumbnail exists,
+// the file isn't a PSD, or it's the large-document (PSB) variant this quick parser doesn't handle.
+async function extractPsdThumbnailDataUrl(buffer) {
+    try {
+        const view = new DataView(buffer);
+        if (String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3)) !== '8BPS') return null;
+        if (view.getUint16(4) !== 1) return null; // PSB (large document format) not handled here
+
+        let offset = 26; // fixed-size file header
+        offset += 4 + view.getUint32(offset); // skip Color Mode Data section
+        const resSectionLen = view.getUint32(offset); offset += 4;
+        const resEnd = offset + resSectionLen;
+
+        let thumbBytes = null;
+        while (offset < resEnd - 8) {
+            if (String.fromCharCode(view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3)) !== '8BIM') break;
+            offset += 4;
+            const resId = view.getUint16(offset); offset += 2;
+            const nameLen = view.getUint8(offset);
+            let nameFieldTotal = 1 + nameLen;
+            if (nameFieldTotal % 2 !== 0) nameFieldTotal += 1;
+            offset += nameFieldTotal;
+            const dataSize = view.getUint32(offset); offset += 4;
+            const dataStart = offset;
+
+            if ((resId === 1036 || resId === 1033) && dataSize > 28) {
+                const format = view.getUint32(dataStart);
+                if (format === 1) { // kJpegRGB
+                    const candidate = new Uint8Array(buffer, dataStart + 28, dataSize - 28);
+                    if (resId === 1036 || !thumbBytes) thumbBytes = candidate; // prefer the newer 1036 resource
+                }
+            }
+            offset += dataSize + (dataSize % 2);
+        }
+        if (!thumbBytes) return null;
+
+        const url = URL.createObjectURL(new Blob([thumbBytes], { type: 'image/jpeg' }));
+        return await new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+                canvas.getContext('2d').drawImage(img, 0, 0);
+                URL.revokeObjectURL(url);
+                resolve(canvas.toDataURL('image/png'));
+            };
+            img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('embedded thumbnail failed to decode')); };
+            img.src = url;
+        });
+    } catch (e) {
+        return null;
+    }
+}
+
+const PSD_COLOR_MODE_NAMES = { 0: 'Bitmap', 1: 'Grayscale', 2: 'Indexed', 3: 'RGB', 4: 'CMYK', 7: 'Multichannel', 8: 'Duotone', 9: 'Lab' };
+
+function readPsdHeaderInfo(buffer) {
+    const view = new DataView(buffer);
+    if (String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3)) !== '8BPS') return null;
+    return {
+        version: view.getUint16(4),
+        channelsCount: view.getUint16(12),
+        height: view.getUint32(14),
+        width: view.getUint32(18),
+        bitsPerChannel: view.getUint16(22),
+        colorMode: view.getUint16(24),
+    };
+}
+
+// Shows the PSD color-mode warning modal and resolves to the user's choice: 'convert' for a
+// full-resolution best-effort conversion, 'thumbnail' for the fast low-res embedded preview, or
+// 'cancel' to skip importing the file.
+// Shows the PSD warning modal with configurable message/button text and resolves to whichever
+// choice's `value` the user clicked ('convert'/'thumbnail'/'cancel' for unsupported color modes,
+// or 'cmyk'/'rgb'/'cancel' for the CMYK preserve-vs-convert prompt below).
+function promptPsdChoice(message, buttonLabels) {
+    psdModeModalMessage.textContent = message;
+    psdModeConvertBtn.textContent = buttonLabels.primary;
+    psdModeThumbBtn.textContent = buttonLabels.secondary;
+    psdModeCancelBtn.textContent = buttonLabels.cancel;
+    psdModeModal.style.display = 'flex';
+
+    return new Promise((resolve) => {
+        function cleanup(result) {
+            psdModeModal.style.display = 'none';
+            psdModeConvertBtn.removeEventListener('click', onPrimary);
+            psdModeThumbBtn.removeEventListener('click', onSecondary);
+            psdModeCancelBtn.removeEventListener('click', onCancel);
+            resolve(result);
+        }
+        function onPrimary() { cleanup(buttonLabels.primaryValue); }
+        function onSecondary() { cleanup(buttonLabels.secondaryValue); }
+        function onCancel() { cleanup('cancel'); }
+        psdModeConvertBtn.addEventListener('click', onPrimary);
+        psdModeThumbBtn.addEventListener('click', onSecondary);
+        psdModeCancelBtn.addEventListener('click', onCancel);
+    });
+}
+
+function promptPsdModeChoice(modeName) {
+    const messages = {
+        Lab: "This PSD uses Lab color mode, which isn't natively supported. A full-resolution conversion is possible using standard Lab\u2192RGB color-science math, and should look very close to the original \u2014 though it may not exactly match Photoshop's own rendering pixel-for-pixel.",
+        Duotone: "This PSD uses Duotone color mode, which isn't natively supported. Photoshop stores its duotone ink colors and curves in a proprietary format this app can't reliably read, so a full-resolution conversion will render as accurate grayscale (correct tone and detail) without the duotone ink tint.",
+        Multichannel: "This PSD uses Multichannel color mode, which has no single defined color space \u2014 its channels can represent arbitrary spot colors. A full-resolution conversion can render the first channel as an approximate grayscale preview, but it won't be color-accurate.",
+    };
+    const message = messages[modeName]
+        || `This PSD uses ${modeName} color mode, which isn't natively supported. A full-resolution conversion may be attempted, but results aren't guaranteed to be accurate.`;
+    return promptPsdChoice(message, {
+        primary: '⚡ Convert at Full Resolution', primaryValue: 'convert',
+        secondary: 'Use Low-Res Thumbnail Instead', secondaryValue: 'thumbnail',
+        cancel: 'Cancel This Import',
+    });
+}
+
+// Asks whether a CMYK PSD's original CMYK data should be preserved untouched (embedded as a
+// native DeviceCMYK image, no RGB round-trip at all) or converted to RGB as usual.
+function promptPsdCmykChoice() {
+    const message = "This PSD is in CMYK color mode. Its original CMYK ink values can be preserved exactly \u2014 embedded directly into the PDF as native CMYK, with no RGB conversion at any point \u2014 which is usually best for print. Or it can be converted to RGB instead, which is more broadly viewable but is a lossy, non-reversible conversion.";
+    return promptPsdChoice(message, {
+        primary: '\u2713 Keep Original CMYK (No Conversion)', primaryValue: 'cmyk',
+        secondary: 'Convert to RGB Instead', secondaryValue: 'rgb',
+        cancel: 'Cancel This Import',
+    });
+}
+
+// PackBits/RLE decompression as used by the PSD composite image data section: decodes
+// `rowByteCounts.length` compressed rows (starting at byte `offset` in `view`), each expanding
+// to `rowByteLength` bytes. Returns the decoded rows plus the buffer offset just past them.
+function decodePackBitsRows(view, offset, rowByteCounts, rowByteLength) {
+    const rows = [];
+    for (let r = 0; r < rowByteCounts.length; r++) {
+        const compLen = rowByteCounts[r];
+        const out = new Uint8Array(rowByteLength);
+        let outPos = 0, inPos = offset;
+        const inEnd = offset + compLen;
+        while (inPos < inEnd && outPos < rowByteLength) {
+            const n = view.getInt8(inPos); inPos++;
+            if (n >= 0) {
+                const count = n + 1;
+                for (let k = 0; k < count && inPos < inEnd; k++) out[outPos++] = view.getUint8(inPos++);
+            } else if (n !== -128) {
+                const count = 1 - n;
+                const val = view.getUint8(inPos); inPos++;
+                for (let k = 0; k < count; k++) out[outPos++] = val;
+            }
+        }
+        rows.push(out);
+        offset += compLen;
+    }
+    return { rows, endOffset: offset };
+}
+
+// Hand-parses a PSD's global/composite image data at full resolution, bypassing ag-psd
+// entirely (it has no decode path at all for Lab/Duotone/Multichannel). Returns one raw
+// 8-bit-per-sample Uint8Array plane per channel, in file channel order.
+function decodePsdRawComposite(buffer) {
+    const view = new DataView(buffer);
+    if (String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3)) !== '8BPS') throw new Error('Not a PSD file.');
+    if (view.getUint16(4) !== 1) throw new Error('Large document format (PSB) is not supported for full-resolution conversion.');
+
+    const channelsCount = view.getUint16(12);
+    const height = view.getUint32(14);
+    const width = view.getUint32(18);
+    const bitsPerChannel = view.getUint16(22);
+    const colorMode = view.getUint16(24);
+    if (bitsPerChannel !== 8) throw new Error(`Only 8-bit-per-channel PSDs are supported for full-resolution conversion (this file is ${bitsPerChannel}-bit).`);
+
+    let offset = 26;
+    offset += 4 + view.getUint32(offset); // skip Color Mode Data section
+    offset += 4 + view.getUint32(offset); // skip Image Resources section
+    offset += 4 + view.getUint32(offset); // skip Layer & Mask Information section
+
+    const compression = view.getUint16(offset); offset += 2;
+    const planes = [];
+
+    if (compression === 0) {
+        for (let c = 0; c < channelsCount; c++) {
+            planes.push(new Uint8Array(buffer.slice(offset, offset + width * height)));
+            offset += width * height;
+        }
+    } else if (compression === 1) {
+        const totalRows = height * channelsCount;
+        const rowByteCounts = [];
+        for (let r = 0; r < totalRows; r++) { rowByteCounts.push(view.getUint16(offset)); offset += 2; }
+        for (let c = 0; c < channelsCount; c++) {
+            const channelRowCounts = rowByteCounts.slice(c * height, (c + 1) * height);
+            const { rows, endOffset } = decodePackBitsRows(view, offset, channelRowCounts, width);
+            offset = endOffset;
+            const plane = new Uint8Array(width * height);
+            for (let r = 0; r < height; r++) plane.set(rows[r], r * width);
+            planes.push(plane);
+        }
+    } else {
+        throw new Error(`Unsupported compression type (${compression}) for full-resolution conversion.`);
+    }
+
+    return { width, height, colorMode, channelsCount, planes };
+}
+
+// Standard Lab (D50, matching Photoshop's default Lab working space) -> sRGB conversion.
+function labPlanesToRgbaCanvas(width, height, planes) {
+    const L = planes[0], A = planes[1], B = planes[2];
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.createImageData(width, height);
+    const out = imageData.data;
+    const Xn = 0.9642, Yn = 1.0, Zn = 0.8249; // D50 white point
+    const finv = (t) => (t * t * t > 0.008856) ? t * t * t : (t - 16 / 116) / 7.787;
+    const gamma = (c) => c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(Math.max(c, 0), 1 / 2.4) - 0.055;
+
+    for (let i = 0; i < width * height; i++) {
+        const l = (L[i] / 255) * 100;
+        const a = A[i] - 128;
+        const b = B[i] - 128;
+        const fy = (l + 16) / 116, fx = fy + a / 500, fz = fy - b / 200;
+        const X = Xn * finv(fx), Y = Yn * finv(fy), Z = Zn * finv(fz);
+        let r = 3.1338561 * X - 1.6168667 * Y - 0.4906146 * Z;
+        let g = -0.9787684 * X + 1.9161415 * Y + 0.0334540 * Z;
+        let bl = 0.0719453 * X - 0.2289914 * Y + 1.4052427 * Z;
+        r = gamma(r); g = gamma(g); bl = gamma(bl);
+        const p = i * 4;
+        out[p] = Math.round(Math.min(1, Math.max(0, r)) * 255);
+        out[p + 1] = Math.round(Math.min(1, Math.max(0, g)) * 255);
+        out[p + 2] = Math.round(Math.min(1, Math.max(0, bl)) * 255);
+        out[p + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return canvas;
+}
+
+// Duotone's proprietary ink/curve data isn't reliably parseable, so its single tone channel is
+// rendered as accurate full-resolution grayscale instead (correct tone and detail, no ink tint).
+// The same single-channel-to-grayscale path also serves as the Multichannel approximation.
+function grayscalePlaneToRgbaCanvas(width, height, plane) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.createImageData(width, height);
+    const out = imageData.data;
+    for (let i = 0; i < width * height; i++) {
+        const v = plane[i];
+        const p = i * 4;
+        out[p] = v; out[p + 1] = v; out[p + 2] = v; out[p + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return canvas;
+}
+
+async function convertUnsupportedPsdModeToPngDataUrl(buffer, colorMode) {
+    const { width, height, planes } = decodePsdRawComposite(buffer);
+    let canvas;
+    if (colorMode === 9) canvas = labPlanesToRgbaCanvas(width, height, planes);       // Lab
+    else if (colorMode === 8) canvas = grayscalePlaneToRgbaCanvas(width, height, planes[0]); // Duotone
+    else if (colorMode === 7) canvas = grayscalePlaneToRgbaCanvas(width, height, planes[0]); // Multichannel
+    else throw new Error(`Color mode ${colorMode} has no full-resolution conversion path.`);
+    return canvas.toDataURL('image/png');
+}
+
 async function psdToPngDataUrl(file) {
     const buffer = await file.arrayBuffer();
-    const psd = agPsd.readPsd(buffer, { skipLayerImageData: true, skipThumbnail: true });
-    return psd.canvas.toDataURL('image/png');
+    try {
+        const agPsdLib = await ensurePatchedAgPsd();
+        const psd = agPsdLib.readPsd(buffer, { skipLayerImageData: true, skipThumbnail: true });
+        return psd.canvas.toDataURL('image/png');
+    } catch (err) {
+        const header = readPsdHeaderInfo(buffer);
+        const unsupportedModeWithConversion = header && [7, 8, 9].includes(header.colorMode); // Multichannel, Duotone, Lab
+
+        if (unsupportedModeWithConversion) {
+            const modeName = PSD_COLOR_MODE_NAMES[header.colorMode];
+            const choice = await promptPsdModeChoice(modeName);
+            if (choice === 'cancel') throw new Error(`Import of "${file.name}" was cancelled.`);
+            if (choice === 'convert') {
+                try {
+                    return await convertUnsupportedPsdModeToPngDataUrl(buffer, header.colorMode);
+                } catch (convertErr) {
+                    console.warn('[ PSD ] Full-resolution conversion failed, falling back to embedded thumbnail:', convertErr);
+                }
+            }
+        } else {
+            console.warn('[ PSD ] Full decode failed, trying embedded preview thumbnail instead:', err);
+        }
+
+        const thumbDataUrl = await extractPsdThumbnailDataUrl(buffer);
+        if (!thumbDataUrl) throw new Error(`Could not read this PSD file (${err.message || err}). Its color mode isn't supported, and no embedded preview thumbnail was found.`);
+        return thumbDataUrl;
+    }
+}
+
+// Decodes a CMYK PSD's raw composite channels (bypassing ag-psd's RGB conversion entirely) and
+// registers them directly in `pdfDoc` as a native DeviceCMYK image XObject — the original ink
+// values pass straight through to the PDF, with no RGB round-trip at any point. Returns a
+// lightweight descriptor (not a real pdf-lib PDFImage) meant to be drawn via drawImageAny().
+function embedRawCmykPsdIntoPdf(pdfDoc, buffer) {
+    const { width, height, colorMode, planes } = decodePsdRawComposite(buffer);
+    if (colorMode !== 4) throw new Error('Not a CMYK-mode PSD.');
+
+    // PSD channel bytes are stored inverted (255 = no ink, 0 = full ink, so each channel reads
+    // like a grayscale "how much white is left" preview); PDF's DeviceCMYK wants the opposite
+    // (0 = no ink, max = full ink), so each sample is inverted on the way in.
+    const [C, M, Y, K] = planes;
+    const n = width * height;
+    const interleaved = new Uint8Array(n * 4);
+    for (let i = 0; i < n; i++) {
+        const p = i * 4;
+        interleaved[p] = 255 - C[i];
+        interleaved[p + 1] = 255 - M[i];
+        interleaved[p + 2] = 255 - Y[i];
+        interleaved[p + 3] = 255 - K[i];
+    }
+
+    const stream = pdfDoc.context.flateStream(interleaved, {
+        Type: 'XObject', Subtype: 'Image', Width: width, Height: height,
+        ColorSpace: 'DeviceCMYK', BitsPerComponent: 8,
+    });
+    const ref = pdfDoc.context.register(stream);
+    return { rawCmyk: true, ref, width, height };
+}
+
+// Draws either a normal pdf-lib PDFImage (via the usual page.drawImage) or one of our raw
+// DeviceCMYK image descriptors from embedRawCmykPsdIntoPdf (via the same low-level XObject +
+// content-stream operators page.drawImage uses internally, since it only accepts real PDFImages).
+function drawImageAny(page, img, opts) {
+    if (img && img.rawCmyk) {
+        const xObjectKey = page.node.newXObject('Image', img.ref);
+        const contentStream = page.getContentStream();
+        contentStream.push(...drawImage(xObjectKey, {
+            x: opts.x, y: opts.y, width: opts.width, height: opts.height,
+            rotate: degrees(0), xSkew: degrees(0), ySkew: degrees(0),
+        }));
+    } else {
+        page.drawImage(img, opts);
+    }
+}
+
+// Used by the page-level PSD import flows (Combine Files, Organize \u2192 Insert File). For a
+// CMYK PSD, offers the choice to preserve its original CMYK data untouched; otherwise (or if
+// that's declined) falls back to the normal RGB conversion path via psdToPngDataUrl. Returns
+// either a raw CMYK descriptor (already registered in `pdfDoc`) or a PNG data URL string.
+async function importPsdForPageEmbedding(pdfDoc, file) {
+    const buffer = await file.arrayBuffer();
+    const header = readPsdHeaderInfo(buffer);
+
+    if (header && header.colorMode === 4) {
+        const choice = await promptPsdCmykChoice();
+        if (choice === 'cancel') throw new Error(`Import of "${file.name}" was cancelled.`);
+        if (choice === 'cmyk') {
+            try {
+                return embedRawCmykPsdIntoPdf(pdfDoc, buffer);
+            } catch (err) {
+                console.warn('[ PSD ] Raw CMYK embed failed, falling back to RGB conversion:', err);
+            }
+        }
+    }
+    return await psdToPngDataUrl(file);
 }
 
 // Normalizes any supported raster/vector file into a PNG data URL ready for pdf-lib's embedPng,
@@ -1083,16 +1472,21 @@ fileInput.addEventListener('change', async (e) => {
                 if (!targetPdf) targetPdf = await PDFDocument.create(); 
                 
                 let imgData;
-                const convertedDataUrl = await rasterFileToPngDataUrlIfNeeded(file, kind);
-                if (convertedDataUrl) imgData = await targetPdf.embedPng(convertedDataUrl);
-                else if (kind === 'png') imgData = await targetPdf.embedPng(arrayBuffer);
-                else imgData = await targetPdf.embedJpg(arrayBuffer);
+                if (kind === 'psd') {
+                    imgData = await importPsdForPageEmbedding(targetPdf, file);
+                    if (imgData && imgData.rawCmyk) isDocCMYK = true;
+                } else {
+                    const convertedDataUrl = await rasterFileToPngDataUrlIfNeeded(file, kind);
+                    if (convertedDataUrl) imgData = await targetPdf.embedPng(convertedDataUrl);
+                    else if (kind === 'png') imgData = await targetPdf.embedPng(arrayBuffer);
+                    else imgData = await targetPdf.embedJpg(arrayBuffer);
+                }
                 
-                const imgDims = imgData.scale(1);
+                const imgDims = imgData.rawCmyk ? { width: imgData.width, height: imgData.height } : imgData.scale(1);
                 const pdfW = (imgDims.width / 300) * 72;
                 const pdfH = (imgDims.height / 300) * 72;
                 
-                targetPdf.addPage([pdfW, pdfH]).drawImage(imgData, { x: 0, y: 0, width: pdfW, height: pdfH });
+                drawImageAny(targetPdf.addPage([pdfW, pdfH]), imgData, { x: 0, y: 0, width: pdfW, height: pdfH });
             }
         }
         basePdfBytes = await targetPdf.save(); 
@@ -1186,19 +1580,24 @@ orgAddInput.addEventListener('change', async (e) => {
             });
         } else {
             let img;
-            const orgConvertedDataUrl = await rasterFileToPngDataUrlIfNeeded(file, orgKind);
-            if (orgConvertedDataUrl) img = await newDoc.embedPng(orgConvertedDataUrl);
-            else {
-                const imgBytes = await file.arrayBuffer();
-                img = orgKind === 'png' ? await newDoc.embedPng(imgBytes) : await newDoc.embedJpg(imgBytes);
+            if (orgKind === 'psd') {
+                img = await importPsdForPageEmbedding(newDoc, file);
+            } else {
+                const orgConvertedDataUrl = await rasterFileToPngDataUrlIfNeeded(file, orgKind);
+                if (orgConvertedDataUrl) img = await newDoc.embedPng(orgConvertedDataUrl);
+                else {
+                    const imgBytes = await file.arrayBuffer();
+                    if (orgKind === 'jpeg' && jpegHasCmykComponents(new Uint8Array(imgBytes))) isDocCMYK = true;
+                    img = orgKind === 'png' ? await newDoc.embedPng(imgBytes) : await newDoc.embedJpg(imgBytes);
+                }
             }
             
             const newPage = newDoc.addPage([refW, refH]);
-            const imgDims = img.scale(1);
+            const imgDims = img.rawCmyk ? { width: img.width, height: img.height } : img.scale(1);
             const scale = Math.min(refW / imgDims.width, refH / imgDims.height);
             const drawW = imgDims.width * scale;
             const drawH = imgDims.height * scale;
-            newPage.drawImage(img, { x: (refW - drawW) / 2, y: (refH - drawH) / 2, width: drawW, height: drawH });
+            drawImageAny(newPage, img, { x: (refW - drawW) / 2, y: (refH - drawH) / 2, width: drawW, height: drawH });
         }
 
         currentPdfBytes = await newDoc.save();

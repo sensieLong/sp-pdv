@@ -1580,24 +1580,39 @@ orgAddInput.addEventListener('change', async (e) => {
             });
         } else {
             let img;
+            let isCmykPreserved = false;
             if (orgKind === 'psd') {
                 img = await importPsdForPageEmbedding(newDoc, file);
+                if (img && img.rawCmyk) isCmykPreserved = true;
             } else {
                 const orgConvertedDataUrl = await rasterFileToPngDataUrlIfNeeded(file, orgKind);
                 if (orgConvertedDataUrl) img = await newDoc.embedPng(orgConvertedDataUrl);
                 else {
                     const imgBytes = await file.arrayBuffer();
-                    if (orgKind === 'jpeg' && jpegHasCmykComponents(new Uint8Array(imgBytes))) isDocCMYK = true;
+                    if (orgKind === 'jpeg' && jpegHasCmykComponents(new Uint8Array(imgBytes))) { isDocCMYK = true; isCmykPreserved = true; }
                     img = orgKind === 'png' ? await newDoc.embedPng(imgBytes) : await newDoc.embedJpg(imgBytes);
                 }
             }
-            
-            const newPage = newDoc.addPage([refW, refH]);
-            const imgDims = img.rawCmyk ? { width: img.width, height: img.height } : img.scale(1);
-            const scale = Math.min(refW / imgDims.width, refH / imgDims.height);
-            const drawW = imgDims.width * scale;
-            const drawH = imgDims.height * scale;
-            drawImageAny(newPage, img, { x: (refW - drawW) / 2, y: (refH - drawH) / 2, width: drawW, height: drawH });
+
+            if (isCmykPreserved) {
+                // CMYK data (raw PSD or a CMYK JPEG) gets its own page sized to the image's own
+                // native dimensions and placed 1:1 — exactly like Combine Files — instead of being
+                // fit/scaled into the reference page size below. This isn't about a canvas (no
+                // HTML canvas is ever involved in either path); it's specifically to avoid the
+                // fit-to-page scale transform changing the placed size relative to the source.
+                const imgDims = img.rawCmyk ? { width: img.width, height: img.height } : img.scale(1);
+                const pdfW = (imgDims.width / 300) * 72;
+                const pdfH = (imgDims.height / 300) * 72;
+                const newPage = newDoc.addPage([pdfW, pdfH]);
+                drawImageAny(newPage, img, { x: 0, y: 0, width: pdfW, height: pdfH });
+            } else {
+                const newPage = newDoc.addPage([refW, refH]);
+                const imgDims = img.scale(1);
+                const scale = Math.min(refW / imgDims.width, refH / imgDims.height);
+                const drawW = imgDims.width * scale;
+                const drawH = imgDims.height * scale;
+                drawImageAny(newPage, img, { x: (refW - drawW) / 2, y: (refH - drawH) / 2, width: drawW, height: drawH });
+            }
         }
 
         currentPdfBytes = await newDoc.save();
